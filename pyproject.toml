@@ -46,4 +46,5 @@ testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
     "docling: imports Docling/torch and runs real document conversion (slow; skip with -m 'not docling')",
+    "vector: requires a running Qdrant on localhost:6333 (skipped automatically if absent)",
 ]

@@ -104,6 +104,11 @@ def run_ingest(settings: Settings, *, full: bool = False) -> list[IndexEntry]:
         from ..search.fts5 import build_fts5_index  # noqa: PLC0415 (lazy)
 
         build_fts5_index(settings, entries)
+    if settings.enable_vector:
+        from ..search.vector import embed_and_upsert  # noqa: PLC0415 (lazy, optional deps)
+
+        count = embed_and_upsert(settings, entries)
+        print(f"[ingest] embedded {count} chunks -> Qdrant ({settings.qdrant_url})")
     print(
         f"[ingest] {processed} processed, {skipped} unchanged, "
         f"{len(entries)} indexed -> {settings.index_json}"

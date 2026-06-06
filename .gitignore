@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Secrets / local config (never commit)
+/.env
+/tokens.json
+
+# Generated doc store / index / db (local dev)
+/var/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# Docling / HuggingFace model caches
+.cache/
+/models/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store

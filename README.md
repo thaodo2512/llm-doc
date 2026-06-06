@@ -203,9 +203,24 @@ codex
 ```
 
 **4. Verify** — inside Codex run `/mcp`; you should see `docs` connected with `list_docs`,
-`read_doc`, `search_docs`, `semantic_search`. The bundled skill (`clients/skill/SKILL.md`) is
-invoked automatically when a prompt mentions docs/specs/runbooks. Manage with `codex mcp list`,
-`codex mcp get docs`, `codex mcp remove docs`.
+`read_doc`, `search_docs`, `semantic_search`. Manage with `codex mcp list`, `codex mcp get docs`,
+`codex mcp remove docs`.
+
+**5. (Optional) Install the docs skill** — `clients/skill/SKILL.md` is a Codex
+[Agent Skill](https://developers.openai.com/codex/skills) that nudges Codex to reach for these
+tools (search → read → cite) when you ask about docs/specs/runbooks. Codex discovers skills as
+folders under `.agents/skills`, so install it by copying the file into one:
+
+```bash
+mkdir -p ~/.agents/skills/docs                          # global (all projects)
+cp clients/skill/SKILL.md ~/.agents/skills/docs/SKILL.md
+# …or per-project:  mkdir -p .agents/skills/docs && cp clients/skill/SKILL.md .agents/skills/docs/
+```
+
+Restart Codex, then use it via `/skills`, `$docs`, or just by asking — Codex auto-invokes it when
+your request matches the skill's `description`. (There is no `codex skill add` command — skills are
+folder-based. Some Codex builds use `~/.codex/skills/` instead of `.agents/skills/`; if it isn't
+discovered, check `codex --version` and the [skills docs](https://developers.openai.com/codex/skills).)
 
 **Troubleshooting**
 - Connected but **`Tools: (none)`** / won't initialize → older Codex build: add

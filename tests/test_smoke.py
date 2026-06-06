@@ -68,6 +68,14 @@ async def test_smoke_list_and_read(ingested):
             assert "Welcome" in content.content
             assert content.total_lines >= 3
 
+            hits = (await client.call_tool("search_docs", {"query": "deploy_token"})).data
+            assert any(h.path == "/public/welcome.md" for h in hits)
+            assert all(h.line >= 1 and h.snippet for h in hits)
+
+            # semantic_search is built but disabled by default -> clear error, no Qdrant/OpenAI.
+            with pytest.raises(Exception):
+                await client.call_tool("semantic_search", {"query": "deploy_token"})
+
 
 async def test_smoke_rbac_scoped_token(ingested):
     async with LiveServer(ingested) as srv:

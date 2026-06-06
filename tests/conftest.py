@@ -46,3 +46,15 @@ def ingested(settings: Settings) -> Settings:
 
     run_ingest(settings, full=True)
     return settings
+
+
+@pytest.fixture
+def ingested_fts(tmp_path: Path) -> Settings:
+    """Ingest with the FTS5 backend (builds the sqlite index)."""
+    from docmcp.ingest.pipeline import run_ingest
+
+    settings = make_settings(
+        tmp_path, search_backend="fts5", fts5_db=tmp_path / "index.sqlite"
+    )
+    run_ingest(settings, full=True)
+    return settings

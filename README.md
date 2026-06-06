@@ -171,4 +171,8 @@ Every tool intersects paths with the caller's `allowed_prefixes`. The HTTP trans
 `Origin` header (DNS-rebinding) and an optional `ALLOWED_HOSTS` allowlist; bind localhost and expose
 only via the TLS reverse proxy. Add per-token rate limiting at the proxy (see `docker/Caddyfile`).
 
-See `internal-docs-mcp-build-brief.md` for the authoritative spec and `CLAUDE.md` for orientation.
+See `CLAUDE.md` for architecture orientation.
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE). Copyright 2026 Tinh Nguyen.

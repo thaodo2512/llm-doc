@@ -22,6 +22,14 @@ DOCLING_EXTS = {
     ".docx": "docx",
     ".html": "html",
     ".htm": "html",
+    # Images -> OCR'd to text via RapidOCR (see _converter). Docling's image formats.
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".tif": "image",
+    ".tiff": "image",
+    ".bmp": "image",
+    ".webp": "image",
 }
 
 EXT_TO_LANG = {
@@ -122,15 +130,33 @@ def _converter():
         import os
 
         from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+        from docling.document_converter import (
+            DocumentConverter,
+            ImageFormatOption,
+            PdfFormatOption,
+        )
 
-        # OCR off by default: docs are typically born-digital, and OCR
-        # pulls a large model and is slow. Enable with DOCLING_OCR=1 for scans.
-        do_ocr = os.environ.get("DOCLING_OCR", "").strip().lower() in {"1", "true", "yes", "on"}
-        pdf_opts = PdfPipelineOptions(do_ocr=do_ocr, do_table_structure=True)
+        # RapidOCR: ONNX-based, CPU-only, models bundled in the wheel (no torch,
+        # no network). Used for image inputs (always) and for scanned PDFs.
+        # PDFs are usually born-digital, so OCR stays off there unless DOCLING_OCR
+        # is set; table-structure detection stays on for documents.
+        do_pdf_ocr = os.environ.get("DOCLING_OCR", "").strip().lower() in {"1", "true", "yes", "on"}
+        pdf_opts = PdfPipelineOptions(
+            do_ocr=do_pdf_ocr, do_table_structure=True, ocr_options=RapidOcrOptions()
+        )
+        # Images carry text only as pixels, so OCR is always on over the whole
+        # image; table-structure detection is skipped.
+        img_opts = PdfPipelineOptions(
+            do_ocr=True,
+            do_table_structure=False,
+            ocr_options=RapidOcrOptions(force_full_page_ocr=True),
+        )
         _CONVERTER = DocumentConverter(
-            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_opts)}
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_opts),
+                InputFormat.IMAGE: ImageFormatOption(pipeline_options=img_opts),
+            }
         )
     return _CONVERTER
 

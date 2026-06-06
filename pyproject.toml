@@ -28,6 +28,7 @@ parse = [
     "docling>=2.0",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=0.9",
+    "rapidocr-onnxruntime>=1.3",  # image OCR (ONNX/CPU, models bundled — no torch, no network)
 ]
 # Optional vector layer (OFF by default).
 vector = [

@@ -40,6 +40,12 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
+def settings_factory():
+    """Return the make_settings helper for tests needing custom source dirs."""
+    return make_settings
+
+
+@pytest.fixture
 def ingested(settings: Settings) -> Settings:
     """Run a full ingest of the fixtures and return the settings pointing at it."""
     from docmcp.ingest.pipeline import run_ingest

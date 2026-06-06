@@ -44,3 +44,6 @@ packages = ["src/docmcp"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "docling: imports Docling/torch and runs real document conversion (slow; skip with -m 'not docling')",
+]

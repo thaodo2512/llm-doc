@@ -41,6 +41,21 @@ A Linux/macOS helper wraps the whole loop:
 ./docmcp.sh status                # config + index summary
 ```
 
+## Document corpus (`raw/`, version-controlled via Git LFS)
+
+The `raw/` source corpus is tracked in git so nothing is silently overwritten/lost.
+Binary formats (PDF/Office/images/archives) go through **Git LFS**; Markdown/text stay
+as normal diffable git (see `.gitattributes`). One-time per machine:
+
+```bash
+# install git-lfs: apt-get install -y git-lfs | dnf install git-lfs | brew install git-lfs
+git lfs install --local        # ./docmcp.sh setup does this for you
+```
+
+Add docs and version them: `./docmcp.sh add /path/to/docs` then `git add raw/ && git commit`.
+**Note:** pushing LFS objects requires an LFS-capable remote (GitHub/GitLab/self-hosted).
+`.env`, `tokens.json`, and the built store (`var/`) remain ignored.
+
 ## Quick start (local dev)
 
 ```bash

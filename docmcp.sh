@@ -50,6 +50,16 @@ cmd_setup() {
 
   command -v rg >/dev/null 2>&1 || warn "ripgrep ('rg') not found — install it (Debian/Ubuntu: sudo apt-get install -y ripgrep; Fedora: sudo dnf install ripgrep; macOS: brew install ripgrep)"
 
+  # Git LFS for the raw/ binary corpus (pdf/office/images) — see .gitattributes.
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    if git lfs version >/dev/null 2>&1; then
+      git lfs install --local >/dev/null 2>&1 || true
+      info "git-lfs enabled for this repo (raw/ binaries tracked via LFS)"
+    else
+      warn "git-lfs not found — raw/ binary docs won't use LFS. Install (Debian/Ubuntu: sudo apt-get install -y git-lfs; Fedora: sudo dnf install git-lfs; macOS: brew install git-lfs) then: git lfs install --local"
+    fi
+  fi
+
   [ -f "$ROOT/.env" ]        || { cp "$ROOT/.env.example" "$ROOT/.env"; info "created .env (edit paths as needed)"; }
   mkdir -p "$ROOT/raw"
   if [ ! -f "$ROOT/tokens.json" ]; then
@@ -68,7 +78,7 @@ cmd_add() {
     cp -R "$src" "$ROOT/raw/"
     info "added $src -> raw/"
   done
-  info "Now run: ./docmcp.sh ingest"
+  info "Now run: ./docmcp.sh ingest  (and 'git add raw/ && git commit' to version them — binaries via LFS)"
 }
 
 cmd_ingest() {

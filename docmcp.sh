@@ -214,6 +214,45 @@ cmd_token_list() {
   cat "$tokfile"
 }
 
+# token-rm <token|user>  — revoke a token (exact token string) OR every token
+# belonging to a user, then reload the server so the revocation is live.
+cmd_token_rm() {
+  [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token-rm <token-or-user>"
+  need_docker
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  [ -f "$ROOT/tokens.json" ] || die "no tokens.json yet — run: ./docmcp.sh setup"
+  [ -w "$ROOT/tokens.json" ] || die "tokens.json is not writable: $ROOT/tokens.json"
+  local target="$1"
+  local removed
+  # Edit the bind-mounted tokens.json as the host user, via a context manager.
+  removed="$(docker run --rm -i --user "$(id -u):$(id -g)" \
+    -v "$ROOT/tokens.json:/work/tokens.json" "$SERVER_IMAGE" \
+    python - /work/tokens.json "$target" <<'PY'
+import json, os, sys
+path, target = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    data = json.load(fh) if os.path.getsize(path) > 0 else {}
+if target in data:                       # exact token string
+    removed = [target]
+else:                                    # otherwise treat it as a user name
+    removed = [t for t, r in data.items() if isinstance(r, dict) and r.get("user") == target]
+for t in removed:
+    del data[t]
+with open(path, "w") as fh:
+    json.dump(data, fh, indent=2)
+print("\n".join(removed))
+PY
+)" || die "failed to update tokens.json"
+  [ -n "$removed" ] || die "no token or user matching '$target' (see: ./docmcp.sh token-list)"
+  info "revoked:"
+  printf '%s\n' "$removed" | sed 's/^/  /'
+  if is_running docs-mcp; then
+    dc restart docs-mcp >/dev/null && info "reloaded the running server (revocation is live)"
+  else
+    warn "start/restart the server for the revocation to take effect: ./docmcp.sh serve"
+  fi
+}
+
 # test [<token>]  — exercise the running server (list_docs + read_doc).
 cmd_test() {
   need_docker; load_env
@@ -282,6 +321,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}status${C_0}                    show services, URL, and index summary
   ${C_B}token${C_0} <user> [prefix...]  mint a bearer token (default prefix: /)
   ${C_B}token-list${C_0}                show configured tokens
+  ${C_B}token-rm${C_0} <token|user>     revoke a token (or all of a user's tokens)
   ${C_B}logs${C_0}                      follow the server + proxy logs
   ${C_B}stop${C_0}                      stop services (your ingested store is kept)
   ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
@@ -310,6 +350,7 @@ case "$cmd" in
   build)              cmd_build "$@" ;;
   token)              cmd_token "$@" ;;
   token-list|tokens)  cmd_token_list "$@" ;;
+  token-rm|token-remove|revoke) cmd_token_rm "$@" ;;
   test)               cmd_test "$@" ;;
   status)             cmd_status "$@" ;;
   help|-h|--help)     usage ;;

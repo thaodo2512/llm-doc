@@ -147,9 +147,16 @@ torch wheel first — see the comment in `docker/Dockerfile`.)
 }
 ```
 
-Generate a token with `python -c "import secrets; print('tok_alice_'+secrets.token_hex(16))"`. Keep
-the file out of VCS and readable only by the server (it is bind-mounted read-only). The server loads
-it at startup — restart `docs-mcp` after edits. An optional `"expires_at": <epoch>` per token is
+Mint, list, and revoke tokens with the helper (each reloads the running server automatically):
+
+```bash
+./docmcp.sh token alice /public /team-fw   # mint a scoped token
+./docmcp.sh token-list                     # show configured tokens
+./docmcp.sh token-rm tok_alice_xxxx        # revoke one token  (or: token-rm alice → all of alice's)
+```
+
+Keep `tokens.json` out of VCS and readable only by the server (it is bind-mounted read-only). The
+server loads it at startup — restart `docs-mcp` after manual edits. An optional `"expires_at": <epoch>` per token is
 honored. Tokens are compared in constant time and never logged.
 
 ## Codex client setup

@@ -1,4 +1,4 @@
-"""Path-traversal containment is the core security guarantee (brief §12)."""
+"""Path-traversal containment is the core security guarantee."""
 
 from __future__ import annotations
 

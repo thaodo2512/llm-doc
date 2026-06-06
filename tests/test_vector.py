@@ -1,4 +1,4 @@
-"""Optional vector layer (brief §6 / §7.6).
+"""Optional vector layer.
 
 - disabled (default): semantic_search errors and never touches Qdrant/OpenAI.
 - enabled: real Qdrant exercised end-to-end with an injected deterministic

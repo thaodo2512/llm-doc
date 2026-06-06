@@ -1,4 +1,4 @@
-"""DocTools core: listing, reading, and RBAC denial (brief §7.2 / §7.3)."""
+"""DocTools core: listing, reading, and RBAC denial."""
 
 from __future__ import annotations
 

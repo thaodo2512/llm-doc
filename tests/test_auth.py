@@ -1,4 +1,4 @@
-"""Bearer-token verification: valid / invalid / expired (brief §10)."""
+"""Bearer-token verification: valid / invalid / expired."""
 
 from __future__ import annotations
 

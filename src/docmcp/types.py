@@ -2,7 +2,7 @@
 
 `IndexEntry` is the full internal record persisted to `index.json`. `DocEntry`,
 `Hit`, and `DocContent` are the public shapes returned by the MCP tools (their
-field sets are fixed by the brief, §7.2).
+field sets are stable).
 """
 
 from __future__ import annotations

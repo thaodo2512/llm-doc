@@ -121,7 +121,7 @@ def _converter():
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
 
-        # OCR off by default: internal docs are typically born-digital, and OCR
+        # OCR off by default: docs are typically born-digital, and OCR
         # pulls a large model and is slow. Enable with DOCLING_OCR=1 for scans.
         do_ocr = os.environ.get("DOCLING_OCR", "").strip().lower() in {"1", "true", "yes", "on"}
         pdf_opts = PdfPipelineOptions(do_ocr=do_ocr, do_table_structure=True)

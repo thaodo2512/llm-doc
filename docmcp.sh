@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# docmcp.sh — helper for the Internal Documentation MCP Server.
+# docmcp.sh — helper for the Documentation MCP Server.
 # Linux/macOS compatible (bash 3.2+). Run `./docmcp.sh help` for usage.
 #
 set -euo pipefail
@@ -174,7 +174,7 @@ cmd_status() {
 
 usage() {
   cat <<EOF
-${C_B}docmcp.sh${C_0} — Internal Documentation MCP Server helper
+${C_B}docmcp.sh${C_0} — Documentation MCP Server helper
 
   ${C_B}setup${C_0}                     create venv, install deps, .env + tokens.json
   ${C_B}add${C_0} <path>...             copy files/dirs into raw/

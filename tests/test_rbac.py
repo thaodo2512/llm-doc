@@ -1,4 +1,4 @@
-"""Path-prefix RBAC is enforced uniformly across every tool (brief §5 / §7.3)."""
+"""Path-prefix RBAC is enforced uniformly across every tool."""
 
 from __future__ import annotations
 

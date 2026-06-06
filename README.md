@@ -1,7 +1,7 @@
-# Internal Documentation MCP Server
+# Documentation MCP Server
 
-A self-hosted [MCP](https://modelcontextprotocol.io) server that exposes a company's internal
-documentation to coding agents (e.g. OpenAI Codex) over **Streamable HTTP**, with per-user
+A self-hosted [MCP](https://modelcontextprotocol.io) server that exposes a documentation corpus
+to coding agents (e.g. OpenAI Codex) over **Streamable HTTP**, with per-user
 **bearer-token auth** and **path-prefix RBAC**. An offline ingestion pipeline turns mixed raw
 sources (Git repos, PDFs, slide decks, HTML, Markdown) into a curated Markdown doc store plus a
 search index. Primary retrieval is **keyword/full-text search** (ripgrep or SQLite FTS5); an
@@ -81,12 +81,12 @@ The system ships as two images from one `docker/Dockerfile`:
 ```bash
 cp .env.example .env                  # configure (DOC_ROOT etc. default to /srv/docs/* inside the volume)
 cp tokens.json.example tokens.json    # your tokens (bind-mounted read-only into the server)
-mkdir -p raw && cp -r /path/to/internal/docs/* raw/
+mkdir -p raw && cp -r /path/to/your/docs/* raw/
 
 cd docker
 # Build for the target arch (this dev box is arm64; deploy targets are amd64):
-docker buildx build --platform linux/amd64 --target server  -t internal-docs-mcp:server  -f Dockerfile ..
-docker buildx build --platform linux/amd64 --target ingest  -t internal-docs-mcp:ingest  -f Dockerfile ..
+docker buildx build --platform linux/amd64 --target server  -t docs-mcp:server  -f Dockerfile ..
+docker buildx build --platform linux/amd64 --target ingest  -t docs-mcp:ingest  -f Dockerfile ..
 
 docker compose run --rm ingest --full   # build the doc store into the shared volume
 docker compose up -d docs-mcp caddy      # serve; Caddy is the only exposed port
@@ -101,8 +101,8 @@ docker compose up -d docs-mcp caddy      # serve; Caddy is the only exposed port
 Re-run ingestion when docs change. Ingestion is incremental (unchanged sources are skipped):
 
 ```cron
-# Rebuild the internal docs store nightly at 02:30
-30 2 * * *  cd /opt/internal-docs-mcp/docker && docker compose run --rm ingest --full >> /var/log/docmcp-ingest.log 2>&1
+# Rebuild the docs store nightly at 02:30
+30 2 * * *  cd /opt/docs-mcp/docker && docker compose run --rm ingest --full >> /var/log/docmcp-ingest.log 2>&1
 ```
 
 ### Optional vector search
@@ -145,7 +145,7 @@ honored. Tokens are compared in constant time and never logged.
 
 Share `clients/codex-config.example.toml` and `clients/skill/SKILL.md` with colleagues. Each sets
 `DOCS_MCP_TOKEN` in their environment and points Codex at `https://<host>/mcp`. The skill is
-implicitly invoked when a prompt mentions internal docs/specs/runbooks.
+implicitly invoked when a prompt mentions docs/specs/runbooks.
 
 ## Configuration
 

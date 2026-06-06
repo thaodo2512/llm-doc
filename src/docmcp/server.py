@@ -16,9 +16,9 @@ from .config import Settings
 from .middleware import OriginValidationMiddleware
 from .tools import register_tools
 
-# Kept self-contained within the first 512 characters (brief §7.1).
+# Kept self-contained within the first 512 characters.
 INSTRUCTIONS = (
-    "Internal documentation server. Flow: list_docs to see the index, then "
+    "Documentation server. Flow: list_docs to see the index, then "
     "search_docs with specific keywords (code symbols, config keys, exact "
     "terms), then read_doc the top hit (pass a line range for long files). "
     "Always cite the doc path you used. Paths are logical, rooted at the doc "
@@ -31,7 +31,7 @@ MCP_PATH = "/mcp"
 
 def build_server(settings: Settings) -> FastMCP:
     mcp = FastMCP(
-        name="internal-docs",
+        name="docs",
         instructions=INSTRUCTIONS,
         auth=JsonFileTokenVerifier(settings.tokens_file),
     )

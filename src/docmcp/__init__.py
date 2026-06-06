@@ -1,4 +1,4 @@
-"""docmcp — a self-hosted MCP server for internal documentation.
+"""docmcp — a self-hosted MCP server for documentation.
 
 Two paths share one curated Markdown doc store:
   * serve path  (server.py): authenticate -> authorize -> search/read -> return text

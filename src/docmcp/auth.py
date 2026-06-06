@@ -3,7 +3,7 @@
 A `TokenVerifier` whose tokens come from a JSON file mapping an opaque token to
 `{user, allowed_prefixes}`. FastMCP strips `Bearer ` and calls `verify_token`;
 returning `None` yields HTTP 401. The token is matched with a constant-time
-comparison and never logged (brief §7.3 / §12).
+comparison and never logged.
 """
 
 from __future__ import annotations

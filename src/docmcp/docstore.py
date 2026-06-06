@@ -4,7 +4,7 @@ Every read goes through `DocStore.resolve()`, which maps a logical path
 ("/public/foo.md") to a real file under DOC_ROOT and guarantees the result stays
 inside DOC_ROOT (rejecting `..`, symlink escapes, and absolute paths). No other
 module may touch the filesystem for doc content. This is the path-traversal
-defense (brief §7.4 / §12).
+defense.
 """
 
 from __future__ import annotations

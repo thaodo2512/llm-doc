@@ -3,7 +3,7 @@
 Runs `rg --json` as a subprocess, scopes the search to the caller's allowed
 prefixes with include globs, and post-filters every hit through the RBAC check
 (defense in depth). Uses fixed-string (`-F`) smart-case matching — ideal for
-exact code symbols and config keys, per the brief.
+exact code symbols and config keys.
 """
 
 from __future__ import annotations

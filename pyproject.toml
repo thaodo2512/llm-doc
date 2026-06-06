@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "internal-docs-mcp"
+name = "docs-mcp"
 version = "0.1.0"
-description = "Self-hosted MCP server that exposes internal documentation to coding agents over Streamable HTTP."
+description = "Self-hosted MCP server that exposes documentation to coding agents over Streamable HTTP."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

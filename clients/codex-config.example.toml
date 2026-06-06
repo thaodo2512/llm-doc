@@ -3,6 +3,6 @@
 #
 #   export DOCS_MCP_TOKEN=tok_yourname_xxxx
 
-[mcp_servers.internal_docs]
+[mcp_servers.docs]
 url = "https://docs-mcp.company.internal/mcp"
 bearer_token_env_var = "DOCS_MCP_TOKEN"

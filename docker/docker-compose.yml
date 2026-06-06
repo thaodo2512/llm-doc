@@ -1,4 +1,4 @@
-name: internal-docs-mcp
+name: docs-mcp
 
 # Layout:
 #   docs-mcp  — the FastMCP server (always on). NOT published; reached only by caddy.
@@ -13,7 +13,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: server
-    image: internal-docs-mcp:server
+    image: docs-mcp:server
     restart: unless-stopped
     env_file:
       - path: ../.env
@@ -54,7 +54,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: ingest
-    image: internal-docs-mcp:ingest
+    image: docs-mcp:ingest
     profiles: ["ingest"]
     env_file:
       - path: ../.env

@@ -1,31 +1,53 @@
-# Version-control the raw document corpus. Binary doc/media formats go through
-# Git LFS (full history without bloating the repo); Markdown/text/code stay as
-# normal git so they remain diffable. Scoped to raw/ so test fixtures are
-# unaffected. To LFS-track everything under raw/ instead, replace these with:
-#   raw/** filter=lfs diff=lfs merge=lfs -text
+# Version-control the raw/ document corpus.
+#
+# DEFAULT: everything under raw/ is treated as binary and stored in Git LFS, so
+# no binary format can ever slip in as a plain git blob. The exceptions below
+# revert text/Markdown/source-code back to normal, diffable git. Scoped to raw/
+# so test fixtures and project source are unaffected.
 
-# Office / documents
-raw/**/*.pdf  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.doc  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.docx filter=lfs diff=lfs merge=lfs -text
-raw/**/*.ppt  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.pptx filter=lfs diff=lfs merge=lfs -text
-raw/**/*.xls  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
-raw/**/*.odt  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.odp  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.ods  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.rtf  filter=lfs diff=lfs merge=lfs -text
+raw/** filter=lfs diff=lfs merge=lfs -text
 
-# Images
-raw/**/*.png  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.jpg  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
-raw/**/*.gif  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.webp filter=lfs diff=lfs merge=lfs -text
-raw/**/*.tiff filter=lfs diff=lfs merge=lfs -text
+# --- exceptions: keep these as normal, diffable git ---
+raw/.gitkeep        !filter !diff !merge text
 
-# Archives
-raw/**/*.zip  filter=lfs diff=lfs merge=lfs -text
-raw/**/*.gz   filter=lfs diff=lfs merge=lfs -text
-raw/**/*.tar  filter=lfs diff=lfs merge=lfs -text
+# docs / prose
+raw/**/*.md         !filter !diff !merge text
+raw/**/*.markdown   !filter !diff !merge text
+raw/**/*.txt        !filter !diff !merge text
+raw/**/*.rst        !filter !diff !merge text
+raw/**/*.csv        !filter !diff !merge text
+raw/**/*.tsv        !filter !diff !merge text
+
+# markup / config (text)
+raw/**/*.html       !filter !diff !merge text
+raw/**/*.htm        !filter !diff !merge text
+raw/**/*.css        !filter !diff !merge text
+raw/**/*.json       !filter !diff !merge text
+raw/**/*.yaml       !filter !diff !merge text
+raw/**/*.yml        !filter !diff !merge text
+raw/**/*.toml       !filter !diff !merge text
+raw/**/*.ini        !filter !diff !merge text
+raw/**/*.xml        !filter !diff !merge text
+
+# source code
+raw/**/*.py         !filter !diff !merge text
+raw/**/*.js         !filter !diff !merge text
+raw/**/*.jsx        !filter !diff !merge text
+raw/**/*.ts         !filter !diff !merge text
+raw/**/*.tsx        !filter !diff !merge text
+raw/**/*.go         !filter !diff !merge text
+raw/**/*.rs         !filter !diff !merge text
+raw/**/*.java       !filter !diff !merge text
+raw/**/*.kt         !filter !diff !merge text
+raw/**/*.scala      !filter !diff !merge text
+raw/**/*.rb         !filter !diff !merge text
+raw/**/*.php        !filter !diff !merge text
+raw/**/*.c          !filter !diff !merge text
+raw/**/*.h          !filter !diff !merge text
+raw/**/*.cpp        !filter !diff !merge text
+raw/**/*.hpp        !filter !diff !merge text
+raw/**/*.cc         !filter !diff !merge text
+raw/**/*.cs         !filter !diff !merge text
+raw/**/*.swift      !filter !diff !merge text
+raw/**/*.sh         !filter !diff !merge text
+raw/**/*.sql        !filter !diff !merge text

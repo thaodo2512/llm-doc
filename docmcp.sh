@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# docmcp.sh — helper for the Documentation MCP Server.
-# Linux/macOS compatible (bash 3.2+). Run `./docmcp.sh help` for usage.
+# docmcp.sh — Docker-based helper for the Documentation MCP Server.
+#
+# The ONLY thing you need installed is Docker (with the Compose plugin).
+# No Python, uv, or ripgrep on the host — everything runs in containers.
+# Linux/macOS compatible. Run `./docmcp.sh help` for usage.
 #
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-VENV="$ROOT/.venv"
-PYBIN="$VENV/bin/python"
+COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
+PROJECT="docs-mcp"                 # compose `name:` — prefixes the network/volumes
+SERVER_IMAGE="docs-mcp:server"
+NET="${PROJECT}_default"           # compose default network
+DOCSTORE_VOL="${PROJECT}_docstore" # named volume holding the curated store + index
 
 # --- pretty output ----------------------------------------------------------
 if [ -t 1 ]; then C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
@@ -18,58 +24,94 @@ info() { printf "%s\n" "${C_G}==>${C_0} $*"; }
 warn() { printf "%s\n" "${C_Y}warning:${C_0} $*" >&2; }
 die()  { printf "%s\n" "${C_R}error:${C_0} $*" >&2; exit 1; }
 
-# Load .env (simple KEY=VALUE lines) so we know paths/ports for our own use.
-load_env() {
-  if [ -f "$ROOT/.env" ]; then
-    set -a; . "$ROOT/.env"; set +a
-  fi
-}
-need_venv() { [ -x "$PYBIN" ] || die "no virtualenv — run: ./docmcp.sh setup"; }
+# --- helpers ----------------------------------------------------------------
+# Force the project name (-p) so the network/volume names are deterministic even
+# if the user has COMPOSE_PROJECT_NAME set in their environment.
+dc() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 
-# Host to connect to when testing (0.0.0.0 -> 127.0.0.1).
-test_host() {
-  local h="${BIND_HOST:-127.0.0.1}"
-  [ "$h" = "0.0.0.0" ] && h="127.0.0.1"
-  printf "%s" "$h"
+need_docker() {
+  command -v docker >/dev/null 2>&1 \
+    || die "Docker is not installed. Install Docker Desktop (or Docker Engine): https://docs.docker.com/get-docker/"
+  docker info >/dev/null 2>&1 \
+    || die "Docker is installed but the daemon isn't running — start Docker Desktop / the docker service, then retry."
+  docker compose version >/dev/null 2>&1 \
+    || die "The Docker Compose plugin is missing. Install Compose v2+ (it ships with Docker Desktop)."
 }
-base_url() { printf "http://%s:%s/mcp" "$(test_host)" "${BIND_PORT:-8080}"; }
+
+# Load .env (simple KEY=VALUE lines) and export so `docker compose` variable
+# substitution (e.g. ${DOMAIN}) and our own logic can see it.
+load_env() { if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi; }
+
+is_true() { case "${1:-}" in true|TRUE|True|1|yes|on) return 0;; *) return 1;; esac; }
+
+# Use `image ls -q` (not `image inspect <name>`): under Docker Desktop's containerd
+# image store, `inspect` by short name:tag can spuriously report "No such image"
+# even when the image exists and runs fine.
+server_image_exists() { [ -n "$(docker image ls -q "$SERVER_IMAGE" 2>/dev/null)" ]; }
+
+is_running() {
+  local id; id="$(dc ps -q "$1" 2>/dev/null)" || return 1
+  [ -n "$id" ] || return 1
+  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" = "true" ]
+}
+
+# Block until qdrant accepts connections (vector mode) so ingest doesn't race it.
+wait_for_qdrant() {
+  server_image_exists || return 0
+  info "waiting for qdrant to be ready…"
+  docker run --rm --network "$NET" "$SERVER_IMAGE" python - <<'PY' || die "qdrant did not become ready in time"
+import socket, sys, time
+for _ in range(30):
+    try:
+        socket.create_connection(("qdrant", 6333), 2).close(); sys.exit(0)
+    except OSError:
+        time.sleep(1)
+sys.exit(1)
+PY
+}
+
+# The URL a user points their MCP client at (served by caddy).
+public_url() {
+  local d="${DOMAIN:-:80}"
+  case "$d" in
+    ""|:80)  printf "http://localhost/mcp" ;;
+    :*)      printf "http://localhost%s/mcp" "$d" ;;   # custom port, e.g. :8081
+    *)       printf "https://%s/mcp" "$d" ;;           # real hostname -> Caddy TLS
+  esac
+}
 
 # --- commands ---------------------------------------------------------------
 
 cmd_setup() {
-  info "Setting up the Python environment (3.11+)"
-  if command -v uv >/dev/null 2>&1; then
-    [ -d "$VENV" ] || uv venv --python 3.11
-    uv pip install -e ".[parse]"            # base + ingestion (Docling/tree-sitter)
-  else
-    warn "uv not found; falling back to python3 -m venv + pip"
-    [ -d "$VENV" ] || python3 -m venv "$VENV"
-    "$PYBIN" -m pip install --upgrade pip >/dev/null
-    "$PYBIN" -m pip install -e ".[parse]"
-  fi
+  need_docker
+  info "Preparing configuration"
+  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; info "created .env (defaults are fine for a local run)"; }
+  mkdir -p "$ROOT/raw"; [ -e "$ROOT/raw/.gitkeep" ] || : > "$ROOT/raw/.gitkeep"
+  load_env
 
-  command -v rg >/dev/null 2>&1 || warn "ripgrep ('rg') not found — install it (Debian/Ubuntu: sudo apt-get install -y ripgrep; Fedora: sudo dnf install ripgrep; macOS: brew install ripgrep)"
+  info "Building the server image (one-time; usually 1–3 minutes)…"
+  dc build docs-mcp
 
-  # Git LFS for the raw/ binary corpus (pdf/office/images) — see .gitattributes.
-  if git rev-parse --git-dir >/dev/null 2>&1; then
-    if git lfs version >/dev/null 2>&1; then
-      git lfs install --local >/dev/null 2>&1 || true
-      info "git-lfs enabled for this repo (raw/ binaries tracked via LFS)"
-    else
-      warn "git-lfs not found — raw/ binary docs won't use LFS. Install (Debian/Ubuntu: sudo apt-get install -y git-lfs; Fedora: sudo dnf install git-lfs; macOS: brew install git-lfs) then: git lfs install --local"
-    fi
-  fi
-
-  [ -f "$ROOT/.env" ]        || { cp "$ROOT/.env.example" "$ROOT/.env"; info "created .env (edit paths as needed)"; }
-  mkdir -p "$ROOT/raw"
   if [ ! -f "$ROOT/tokens.json" ]; then
-    load_env
-    cmd_token admin / >/dev/null
-    info "created tokens.json with an 'admin' token (full access) — see: ./docmcp.sh token-list"
+    printf '{}\n' > "$ROOT/tokens.json"
+    local tok
+    tok="$(cmd_token admin /)" || die "failed to create the admin token (see the Docker error above)"
+    [ -n "$tok" ] || die "admin-token creation produced no token — check that 'docker run' works"
+    info "created tokens.json with an 'admin' token (full access):"
+    printf "    %s%s%s\n" "$C_B" "$tok" "$C_0"
   fi
-  info "Setup complete. Next: put docs in raw/ then ${C_B}./docmcp.sh ingest${C_0}"
+
+  info "Setup complete. Next steps:"
+  cat <<EOF
+    ./docmcp.sh add /path/to/your/docs   # stage documents into raw/
+    ./docmcp.sh ingest                   # build the searchable store
+                                         #   (first run builds the ingestion image — large, several minutes)
+    ./docmcp.sh serve                    # start the server (+ reverse proxy)
+    ./docmcp.sh test                     # verify it answers
+EOF
 }
 
+# add <file-or-dir>...  — stage documents into raw/ (plain file copy; no toolchain).
 cmd_add() {
   [ "$#" -ge 1 ] || die "usage: ./docmcp.sh add <file-or-dir> [<file-or-dir> ...]"
   mkdir -p "$ROOT/raw"
@@ -78,71 +120,125 @@ cmd_add() {
     cp -R "$src" "$ROOT/raw/"
     info "added $src -> raw/"
   done
-  info "Now run: ./docmcp.sh ingest  (and 'git add raw/ && git commit' to version them — binaries via LFS)"
+  info "Now run: ./docmcp.sh ingest"
 }
 
+# ingest [--full]  — (re)build the curated store from raw/ in the ingestion container.
 cmd_ingest() {
-  need_venv
-  info "Ingesting raw/ -> curated doc store + index"
-  "$VENV/bin/docmcp-ingest" "$@"            # pass through e.g. --full
+  need_docker; load_env
+  local profiles=(--profile ingest)
+  if is_true "${ENABLE_VECTOR:-false}"; then
+    profiles+=(--profile vector)
+    info "vector search enabled — starting qdrant"
+    dc --profile vector up -d qdrant
+    wait_for_qdrant
+  fi
+  info "Ingesting raw/ → curated store"
+  warn "the first ingest builds the ingestion image (Docling/torch) — large download, may take several minutes"
+  dc "${profiles[@]}" run --rm ingest "$@"
+  if is_running docs-mcp; then
+    dc restart docs-mcp >/dev/null && info "reloaded the running server (new docs are live)"
+  fi
 }
 
+# serve  — start the server and reverse proxy in the background.
 cmd_serve() {
-  need_venv
-  load_env
-  info "Serving MCP on $(base_url)  (Ctrl-C to stop)"
-  exec "$VENV/bin/docmcp-server"
+  need_docker; load_env
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  is_true "${ENABLE_VECTOR:-false}" && dc --profile vector up -d qdrant
+  info "Starting the server + reverse proxy…"
+  dc up -d docs-mcp caddy
+  info "Server is live at: ${C_B}$(public_url)${C_0}"
+  info "  logs: ./docmcp.sh logs    •    stop: ./docmcp.sh stop    •    check: ./docmcp.sh test"
 }
 
-# token <user> [<prefix> ...]   -> mints a token, adds it to tokens.json, prints it
+# stop  — stop and remove the containers (named volumes / your data are kept).
+cmd_stop() {
+  need_docker
+  info "Stopping all services (your ingested store is preserved)"
+  dc --profile ingest --profile vector down
+}
+
+# logs  — follow the server + proxy logs.
+cmd_logs() { need_docker; dc logs -f --tail=100 docs-mcp caddy; }
+
+# build [server|ingest|all]  — (re)build images after code changes.
+cmd_build() {
+  need_docker
+  case "${1:-server}" in
+    server) dc build docs-mcp ;;
+    ingest) dc --profile ingest build ingest ;;
+    all)    dc build docs-mcp && dc --profile ingest build ingest ;;
+    *)      die "usage: ./docmcp.sh build [server|ingest|all]" ;;
+  esac
+}
+
+# token <user> [<prefix> ...]  — mint a scoped bearer token (default prefix: /).
 cmd_token() {
   [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token <user> [<allowed-prefix> ...]   (default prefix: /)"
-  need_venv
-  load_env
-  local tokfile="${TOKENS_FILE:-$ROOT/tokens.json}"
+  need_docker
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  [ -f "$ROOT/tokens.json" ] || printf '{}\n' > "$ROOT/tokens.json"
+  [ -w "$ROOT/tokens.json" ] || die "tokens.json is not writable: $ROOT/tokens.json"
   local user="$1"; shift
-  "$PYBIN" - "$tokfile" "$user" "$@" <<'PY'
+  local tok
+  # Run as the host user so the bind-mounted tokens.json stays host-owned (Linux),
+  # and write via a context manager so the file is always flushed/closed cleanly.
+  tok="$(docker run --rm -i --user "$(id -u):$(id -g)" \
+    -v "$ROOT/tokens.json:/work/tokens.json" "$SERVER_IMAGE" \
+    python - /work/tokens.json "$user" "$@" <<'PY'
 import json, os, secrets, sys
 path, user = sys.argv[1], sys.argv[2]
 prefixes = sys.argv[3:] or ["/"]
-data = json.load(open(path)) if os.path.exists(path) else {}
+with open(path) as fh:
+    data = json.load(fh) if os.path.getsize(path) > 0 else {}
 tok = "tok_%s_%s" % (user, secrets.token_hex(12))
 data[tok] = {"user": user, "allowed_prefixes": prefixes}
 with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
 print(tok)
 PY
-  warn "restart the server for new tokens to take effect"
+)"
+  printf '%s\n' "$tok"
+  if is_running docs-mcp; then
+    dc restart docs-mcp >/dev/null && info "reloaded the running server (token is active)"
+  else
+    warn "start/restart the server for the new token to take effect: ./docmcp.sh serve"
+  fi
 }
 
+# token-list  — show configured tokens (the file is plain JSON).
 cmd_token_list() {
-  need_venv; load_env
-  local tokfile="${TOKENS_FILE:-$ROOT/tokens.json}"
-  [ -f "$tokfile" ] || die "no tokens file at $tokfile (run: ./docmcp.sh setup)"
-  "$PYBIN" - "$tokfile" <<'PY'
-import json, sys
-for tok, rec in json.load(open(sys.argv[1])).items():
-    print(f"  {tok}\t{rec['user']}\t{rec['allowed_prefixes']}")
-PY
+  local tokfile="$ROOT/tokens.json"
+  [ -f "$tokfile" ] || die "no tokens.json yet — run: ./docmcp.sh setup"
+  cat "$tokfile"
 }
 
-# test [<token>]   -> exercises the running server (defaults to the first token)
+# test [<token>]  — exercise the running server (list_docs + read_doc).
 cmd_test() {
-  need_venv; load_env
-  local tokfile="${TOKENS_FILE:-$ROOT/tokens.json}"
+  need_docker; load_env
+  server_image_exists || die "run ./docmcp.sh setup first"
+  is_running docs-mcp || die "the server isn't running — start it: ./docmcp.sh serve"
   local token="${1:-}"
   if [ -z "$token" ]; then
-    token="$("$PYBIN" -c "import json,sys; d=json.load(open(sys.argv[1])); print(next(iter(d)))" "$tokfile")" \
-      || die "no token given and none in $tokfile"
+    [ -f "$ROOT/tokens.json" ] || die "no token given and no tokens.json (run ./docmcp.sh setup)"
+    token="$(grep -oE '"tok_[^"]+"' "$ROOT/tokens.json" | head -n1 | tr -d '"')" || token=''
+    [ -n "$token" ] || die "no token found in tokens.json — pass one: ./docmcp.sh test <token>"
   fi
-  info "Testing $(base_url) with token ${token%%_*}_…"
-  "$PYBIN" - "$(base_url)" "$token" <<'PY'
+  # The server's TrustedHostMiddleware only accepts Host values in ALLOWED_HOSTS
+  # (default localhost). In normal use Caddy forwards that Host; for this direct
+  # smoke test we send it explicitly. Use the configured DOMAIN if it's a hostname.
+  local thost="localhost"
+  case "${DOMAIN:-}" in ""|:*) thost="localhost" ;; *) thost="${DOMAIN}" ;; esac
+  info "Testing the running server over the compose network…"
+  docker run --rm -i --network "$NET" "$SERVER_IMAGE" \
+    python - "http://docs-mcp:8080/mcp" "$token" "$thost" <<'PY'
 import asyncio, sys
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-url, token = sys.argv[1], sys.argv[2]
+url, token, host = sys.argv[1], sys.argv[2], sys.argv[3]
 async def main():
-    tr = StreamableHttpTransport(url, headers={"Authorization": f"Bearer {token}"})
+    tr = StreamableHttpTransport(url, headers={"Authorization": f"Bearer {token}", "Host": host})
     async with Client(tr) as c:
         print("  tools     :", sorted(t.name for t in await c.list_tools()))
         docs = (await c.call_tool("list_docs", {})).data
@@ -155,45 +251,50 @@ asyncio.run(main())
 PY
 }
 
+# status  — show docker state, the URL, and how many docs are indexed.
 cmd_status() {
-  load_env
-  echo "${C_B}root      ${C_0} $ROOT"
-  echo "${C_B}venv      ${C_0} $([ -x "$PYBIN" ] && echo present || echo MISSING)"
-  echo "${C_B}ripgrep   ${C_0} $(command -v rg >/dev/null 2>&1 && rg --version | head -1 || echo MISSING)"
-  echo "${C_B}url       ${C_0} $(base_url)"
-  echo "${C_B}DOC_ROOT  ${C_0} ${DOC_ROOT:-?}"
-  echo "${C_B}SOURCE    ${C_0} ${SOURCE_DIRS:-?}"
-  echo "${C_B}backend   ${C_0} ${SEARCH_BACKEND:-ripgrep}   vector=${ENABLE_VECTOR:-false}"
-  local idx="${DOC_ROOT:-./var/curated}/index.json"
-  if [ -f "$idx" ] && [ -x "$PYBIN" ]; then
-    echo "${C_B}indexed   ${C_0} $("$PYBIN" -c "import json,sys;print(len(json.load(open(sys.argv[1]))),'docs')" "$idx")"
+  need_docker; load_env
+  printf "%sDocumentation MCP Server%s\n" "$C_B" "$C_0"
+  printf "  %-10s %s\n" "docker"  "$(docker version -f '{{.Server.Version}}' 2>/dev/null || echo 'daemon not running')"
+  printf "  %-10s %s\n" "url"     "$(public_url)"
+  printf "  %-10s %s\n" "vector"  "${ENABLE_VECTOR:-false}"
+  printf "  %-10s %s\n" "server"  "$(is_running docs-mcp && echo running || echo stopped)"
+  printf "  %-10s %s\n" "proxy"   "$(is_running caddy && echo running || echo stopped)"
+  if docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1 && server_image_exists; then
+    local n
+    n="$(docker run --rm -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+      python -c 'import json,os; p="/srv/docs/curated/index.json"; print(len(json.load(open(p))) if os.path.exists(p) else 0)' 2>/dev/null || echo '?')"
+    printf "  %-10s %s\n" "indexed" "${n} docs"
   else
-    echo "${C_B}indexed   ${C_0} (not built — run: ./docmcp.sh ingest)"
+    printf "  %-10s %s\n" "indexed" "(not built yet — run ./docmcp.sh ingest)"
   fi
 }
 
 usage() {
   cat <<EOF
-${C_B}docmcp.sh${C_0} — Documentation MCP Server helper
+${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Docker is required)
 
-  ${C_B}setup${C_0}                     create venv, install deps, .env + tokens.json
-  ${C_B}add${C_0} <path>...             copy files/dirs into raw/
-  ${C_B}ingest${C_0} [--full]           build the curated doc store + index from raw/
-  ${C_B}serve${C_0}                     run the MCP server (foreground)
-  ${C_B}token${C_0} <user> [prefix...]  mint a bearer token (default prefix: /)
-  ${C_B}token-list${C_0}                list configured tokens
+  ${C_B}setup${C_0}                     build the image, create .env + tokens.json (admin token)
+  ${C_B}add${C_0} <path>...             stage files/dirs into raw/
+  ${C_B}ingest${C_0} [--full]           build the searchable store from raw/ (in a container)
+  ${C_B}serve${C_0}                     start the server + reverse proxy (background)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
-  ${C_B}status${C_0}                    show config + index summary
+  ${C_B}status${C_0}                    show services, URL, and index summary
+  ${C_B}token${C_0} <user> [prefix...]  mint a bearer token (default prefix: /)
+  ${C_B}token-list${C_0}                show configured tokens
+  ${C_B}logs${C_0}                      follow the server + proxy logs
+  ${C_B}stop${C_0}                      stop services (your ingested store is kept)
+  ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
 
-Typical first run:
-  ./docmcp.sh setup
-  ./docmcp.sh add /path/to/your/docs
-  ./docmcp.sh ingest --full
-  ./docmcp.sh serve          # in one terminal
-  ./docmcp.sh test           # in another
+First run:
+  1. Install Docker Desktop (or Docker Engine + Compose).
+  2. ./docmcp.sh setup
+  3. ./docmcp.sh add /path/to/your/docs
+  4. ./docmcp.sh ingest
+  5. ./docmcp.sh serve   &&   ./docmcp.sh test
 
-Connect Codex: point ~/.codex/config.toml at $(base_url 2>/dev/null || echo http://localhost:8080/mcp)
-with a bearer token (see clients/codex-config.example.toml).
+Connect a client (e.g. OpenAI Codex) to the printed URL with a bearer token —
+see clients/codex-config.example.toml.
 EOF
 }
 
@@ -203,7 +304,10 @@ case "$cmd" in
   setup)              cmd_setup "$@" ;;
   add)                cmd_add "$@" ;;
   ingest)             cmd_ingest "$@" ;;
-  serve)              cmd_serve "$@" ;;
+  serve|up)           cmd_serve "$@" ;;
+  stop|down)          cmd_stop "$@" ;;
+  logs)               cmd_logs "$@" ;;
+  build)              cmd_build "$@" ;;
   token)              cmd_token "$@" ;;
   token-list|tokens)  cmd_token_list "$@" ;;
   test)               cmd_test "$@" ;;

@@ -27,19 +27,27 @@ Codex (laptop) --HTTPS + bearer token--> [ Caddy TLS proxy ] --> docs-mcp (FastM
 All tools are filtered to the caller's `allowed_prefixes`; `read_doc` *denies* (not silently empties)
 a disallowed path. Logical paths are rooted at the doc store and start with `/`.
 
-## Helper script (`./docmcp.sh`)
+## Quick start (Docker + `./docmcp.sh`)
 
-A Linux/macOS helper wraps the whole loop:
+The **only** thing you need on the host is **Docker** (with the Compose plugin) — no Python,
+`uv`, or ripgrep. The `./docmcp.sh` helper runs everything in containers, so it's the easy path
+even for non-developers:
 
 ```bash
-./docmcp.sh setup                 # venv + deps + .env + tokens.json (+ ripgrep check)
-./docmcp.sh add /path/to/docs     # copy files/dirs into raw/
-./docmcp.sh ingest --full         # build the curated doc store + index
-./docmcp.sh serve                 # run the MCP server (one terminal)
-./docmcp.sh test                  # exercise the running server (another terminal)
+./docmcp.sh setup                          # build the image; create .env + tokens.json (admin token)
+./docmcp.sh add /path/to/your/docs         # stage documents into raw/
+./docmcp.sh ingest                         # build the searchable store (first run builds the ingest image)
+./docmcp.sh serve                          # start the server + reverse proxy (background)
+./docmcp.sh test                           # verify it answers (list_docs / read_doc)
 ./docmcp.sh token alice /public /team-fw   # mint a scoped bearer token
-./docmcp.sh status                # config + index summary
+./docmcp.sh status                         # services, URL, index summary
+./docmcp.sh stop                           # stop (your ingested store is kept)
 ```
+
+`setup` builds the slim **server** image right away; the heavier **ingest** image (Docling +
+tree-sitter) is built the first time you run `./docmcp.sh ingest`. The server is reachable at
+**`http://localhost/mcp`** through Caddy (the only published port); set `DOMAIN=docs.company.internal`
+in `.env` for automatic HTTPS. Run `./docmcp.sh help` for the full command list.
 
 ## Document corpus (`raw/`, version-controlled via Git LFS)
 
@@ -49,52 +57,55 @@ as normal diffable git (see `.gitattributes`). One-time per machine:
 
 ```bash
 # install git-lfs: apt-get install -y git-lfs | dnf install git-lfs | brew install git-lfs
-git lfs install --local        # ./docmcp.sh setup does this for you
+git lfs install --local
 ```
 
 Add docs and version them: `./docmcp.sh add /path/to/docs` then `git add raw/ && git commit`.
 **Note:** pushing LFS objects requires an LFS-capable remote (GitHub/GitLab/self-hosted).
 `.env`, `tokens.json`, and the built store (`var/`) remain ignored.
 
-## Quick start (local dev)
+## Develop without Docker (optional)
+
+To hack on the code itself you can run it on the host with [uv](https://docs.astral.sh/uv/)
+(Python 3.11+) instead of Docker:
 
 ```bash
 uv venv --python 3.11
-uv pip install -e ".[dev]"            # add ".[parse]" for ingestion, ".[vector]" for semantic search
-brew install ripgrep                  # keyword backend (Linux: apt-get install ripgrep)
-cp .env.example .env                  # edit paths/tokens
+uv pip install -e ".[dev,parse]"      # add ".[vector]" for semantic search
+# ripgrep is the keyword backend: apt-get install ripgrep | brew install ripgrep
+cp .env.example .env                  # for a host run set DOC_ROOT/SOURCE_DIRS to local paths (e.g. ./var/curated, ./raw)
 cp tokens.json.example tokens.json    # issue per-user tokens (see below)
 
 uv run python -m docmcp.config        # print resolved settings
 uv run docmcp-ingest --full --source ./raw   # build the doc store
 uv run docmcp-server                  # serve on $BIND_HOST:$BIND_PORT/mcp
+uv run pytest -m "not docling"        # fast test suite
 ```
 
-## Deploy with Docker (x86_64 Linux)
+## Deploy to a Linux server (x86_64)
 
-The system ships as two images from one `docker/Dockerfile`:
-
-- **`server`** — slim runtime you expose (FastMCP + ripgrep; no torch/Docling).
-- **`ingest`** — heavier build-path image (Docling + tree-sitter + optional vector) used to
-  (re)build the doc store; never exposed.
+Clone the repo on the target host and run the same helper — Docker is the only dependency:
 
 ```bash
-cp .env.example .env                  # configure (DOC_ROOT etc. default to /srv/docs/* inside the volume)
-cp tokens.json.example tokens.json    # your tokens (bind-mounted read-only into the server)
-mkdir -p raw && cp -r /path/to/your/docs/* raw/
-
-cd docker
-# Build for the target arch (this dev box is arm64; deploy targets are amd64):
-docker buildx build --platform linux/amd64 --target server  -t docs-mcp:server  -f Dockerfile ..
-docker buildx build --platform linux/amd64 --target ingest  -t docs-mcp:ingest  -f Dockerfile ..
-
-docker compose run --rm ingest --full   # build the doc store into the shared volume
-docker compose up -d docs-mcp caddy      # serve; Caddy is the only exposed port
+./docmcp.sh setup && ./docmcp.sh ingest && ./docmcp.sh serve
 ```
 
+Two images come from one `docker/Dockerfile`: a slim **`server`** (FastMCP + ripgrep — the only
+thing exposed, via Caddy) and a heavier **`ingest`** (Docling + tree-sitter [+ vector], run on
+demand, never exposed). The curated store + index live in a named volume shared between them, so
 `docs-mcp` binds `0.0.0.0:8080` **inside** the container but is **not published** — only Caddy
-(80/443) is reachable, preserving the "bind localhost, expose only via reverse proxy" rule. Set
-`DOMAIN=docs-mcp.company.internal` in `.env` to enable Caddy's automatic HTTPS.
+(80/443) is reachable. Set `DOMAIN=docs-mcp.company.internal` in `.env` for automatic HTTPS.
+
+Building on an arm64 box (e.g. Apple Silicon) for an amd64 target? Build the images explicitly:
+
+```bash
+cd docker
+docker buildx build --platform linux/amd64 --target server -t docs-mcp:server -f Dockerfile ..
+docker buildx build --platform linux/amd64 --target ingest -t docs-mcp:ingest -f Dockerfile ..
+```
+
+Under the hood the helper just wraps `docker compose -f docker/docker-compose.yml` (`run --rm
+ingest`, `up -d docs-mcp caddy`, …) — use those directly for advanced control.
 
 ### Scheduled ingest (cron)
 

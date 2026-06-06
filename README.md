@@ -42,6 +42,7 @@ even for non-developers:
 ./docmcp.sh token alice /public /team-fw   # mint a scoped bearer token
 ./docmcp.sh status                         # services, URL, index summary
 ./docmcp.sh stop                           # stop (your ingested store is kept)
+./docmcp.sh schedule 30m                   # (optional) auto re-ingest on a cron schedule
 ```
 
 `setup` builds the slim **server** image right away; the heavier **ingest** image (Docling +
@@ -109,12 +110,17 @@ ingest`, `up -d docs-mcp caddy`, …) — use those directly for advanced contro
 
 ### Scheduled ingest (cron)
 
-Re-run ingestion when docs change. Ingestion is incremental (unchanged sources are skipped):
+Re-run ingestion automatically (it's incremental — unchanged files are skipped). The helper
+manages a crontab entry for you:
 
-```cron
-# Rebuild the docs store nightly at 02:30
-30 2 * * *  cd /opt/docs-mcp/docker && docker compose run --rm ingest --full >> /var/log/docmcp-ingest.log 2>&1
+```bash
+./docmcp.sh schedule 30m      # every 30 min  (or: hourly | daily | weekly | "m h dom mon dow")
+./docmcp.sh schedule          # show the current schedule
+./docmcp.sh schedule off      # remove it
 ```
+
+It bakes in the right `docker` PATH and logs to `var/cron-ingest.log`. The job only fires while
+Docker is running (on a server `dockerd` is always up; on a Mac, Docker Desktop must be open).
 
 ### Optional vector search
 

@@ -309,6 +309,69 @@ cmd_status() {
   fi
 }
 
+# schedule [<spec>|off]  — run `ingest` on a cron schedule. <spec> is one of:
+#   30m | 2h                 every N minutes (1-59) or hours (1-23)
+#   hourly | daily | weekly  presets
+#   "*/15 * * * *"           a raw 5-field cron expression (quote it)
+# No arg shows the current schedule; `off` removes it. Idempotent: re-running
+# replaces our entry and leaves any other crontab lines untouched.
+_cron_marker() { printf '# docmcp-ingest:%s' "$ROOT"; }
+
+cmd_schedule() {
+  command -v crontab >/dev/null 2>&1 || die "'crontab' isn't available on this system"
+  local spec="${1:-}"
+  case "$spec" in
+    ""|status|show)  _cron_status; return ;;
+    off|remove|stop) _cron_remove; return ;;
+  esac
+  local cron_expr n
+  case "$spec" in
+    hourly) cron_expr="0 * * * *" ;;
+    daily)  cron_expr="0 2 * * *" ;;
+    weekly) cron_expr="0 2 * * 0" ;;
+    *m) n="${spec%m}"; { [ "$n" -ge 1 ] && [ "$n" -le 59 ]; } 2>/dev/null \
+          || die "minutes must be 1-59: $spec"; cron_expr="*/$n * * * *" ;;
+    *h) n="${spec%h}"; { [ "$n" -ge 1 ] && [ "$n" -le 23 ]; } 2>/dev/null \
+          || die "hours must be 1-23: $spec"; cron_expr="0 */$n * * *" ;;
+    *)  [ "$(printf '%s' "$spec" | awk '{print NF}')" = 5 ] \
+          || die "usage: ./docmcp.sh schedule <Nm|Nh|hourly|daily|weekly|'m h dom mon dow'|off>"
+        cron_expr="$spec" ;;
+  esac
+  _cron_install "$cron_expr"
+}
+
+_cron_install() {
+  local cron_expr="$1" marker logf dockerdir line current kept
+  marker="$(_cron_marker)"
+  dockerdir="$(dirname "$(command -v docker)")"
+  logf="$ROOT/var/cron-ingest.log"; mkdir -p "$ROOT/var"
+  line="$cron_expr cd \"$ROOT\" && PATH=\"$dockerdir:/usr/local/bin:/usr/bin:/bin\" ./docmcp.sh ingest >> \"$logf\" 2>&1 $marker"
+  current="$(crontab -l 2>/dev/null || true)"
+  kept="$(printf '%s\n' "$current" | grep -vF "$marker" || true)"
+  { [ -n "$kept" ] && printf '%s\n' "$kept" || true; printf '%s\n' "$line"; } | crontab -
+  info "scheduled — '$cron_expr' runs ${C_B}./docmcp.sh ingest${C_0}"
+  info "  log: $logf   •   show: ./docmcp.sh schedule   •   remove: ./docmcp.sh schedule off"
+  warn "fires only while Docker is running (on a Mac, Docker Desktop must be open)"
+}
+
+_cron_remove() {
+  local marker current kept
+  marker="$(_cron_marker)"
+  current="$(crontab -l 2>/dev/null || true)"
+  printf '%s\n' "$current" | grep -qF "$marker" || { info "no docmcp schedule was set"; return 0; }
+  kept="$(printf '%s\n' "$current" | grep -vF "$marker" || true)"
+  if [ -n "$kept" ]; then printf '%s\n' "$kept" | crontab -; else crontab -r 2>/dev/null || true; fi
+  info "schedule removed"
+}
+
+_cron_status() {
+  local marker line
+  marker="$(_cron_marker)"
+  line="$(crontab -l 2>/dev/null | grep -F "$marker" || true)"
+  if [ -n "$line" ]; then info "current schedule:"; printf '  %s\n' "$line"
+  else info "no schedule set — e.g.: ./docmcp.sh schedule 30m   (or hourly | daily | 'm h dom mon dow')"; fi
+}
+
 usage() {
   cat <<EOF
 ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Docker is required)
@@ -325,6 +388,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}logs${C_0}                      follow the server + proxy logs
   ${C_B}stop${C_0}                      stop services (your ingested store is kept)
   ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
+  ${C_B}schedule${C_0} <Nm|Nh|daily|off> run 'ingest' on a cron schedule (no arg shows it)
 
 First run:
   1. Install Docker Desktop (or Docker Engine + Compose).
@@ -348,6 +412,7 @@ case "$cmd" in
   stop|down)          cmd_stop "$@" ;;
   logs)               cmd_logs "$@" ;;
   build)              cmd_build "$@" ;;
+  schedule|cron)      cmd_schedule "$@" ;;
   token)              cmd_token "$@" ;;
   token-list|tokens)  cmd_token_list "$@" ;;
   token-rm|token-remove|revoke) cmd_token_rm "$@" ;;

@@ -1,0 +1,31 @@
+# Version-control the raw document corpus. Binary doc/media formats go through
+# Git LFS (full history without bloating the repo); Markdown/text/code stay as
+# normal git so they remain diffable. Scoped to raw/ so test fixtures are
+# unaffected. To LFS-track everything under raw/ instead, replace these with:
+#   raw/** filter=lfs diff=lfs merge=lfs -text
+
+# Office / documents
+raw/**/*.pdf  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.doc  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.docx filter=lfs diff=lfs merge=lfs -text
+raw/**/*.ppt  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.pptx filter=lfs diff=lfs merge=lfs -text
+raw/**/*.xls  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
+raw/**/*.odt  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.odp  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.ods  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.rtf  filter=lfs diff=lfs merge=lfs -text
+
+# Images
+raw/**/*.png  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.jpg  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+raw/**/*.gif  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.webp filter=lfs diff=lfs merge=lfs -text
+raw/**/*.tiff filter=lfs diff=lfs merge=lfs -text
+
+# Archives
+raw/**/*.zip  filter=lfs diff=lfs merge=lfs -text
+raw/**/*.gz   filter=lfs diff=lfs merge=lfs -text
+raw/**/*.tar  filter=lfs diff=lfs merge=lfs -text

@@ -12,6 +12,9 @@ venv/
 /.env
 /tokens.json
 
+# NOTE: raw/ source documents ARE version-controlled — binary types via Git LFS,
+# text/Markdown as normal git (see .gitattributes). Nothing under raw/ is ignored.
+
 # Generated doc store / index / db (local dev)
 /var/
 *.sqlite

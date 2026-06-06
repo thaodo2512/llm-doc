@@ -154,9 +154,61 @@ honored. Tokens are compared in constant time and never logged.
 
 ## Codex client setup
 
-Share `clients/codex-config.example.toml` and `clients/skill/SKILL.md` with colleagues. Each sets
-`DOCS_MCP_TOKEN` in their environment and points Codex at `https://<host>/mcp`. The skill is
-implicitly invoked when a prompt mentions docs/specs/runbooks.
+Point the [OpenAI Codex](https://developers.openai.com/codex) CLI at the running server. Each user
+needs a **bearer token** you minted for them plus one entry in `~/.codex/config.toml`. The schema
+(`url` + `bearer_token_env_var`) is the current, officially-documented one — verified against
+[OpenAI's Codex MCP docs](https://developers.openai.com/codex/mcp).
+
+**1. Operator: mint a token** scoped to the prefixes that user may read, and hand it over:
+
+```bash
+./docmcp.sh token alice /public /team-fw     # → tok_alice_xxxx
+```
+
+**2. User: register the server** — one command writes the config block:
+
+```bash
+codex mcp add docs --url http://localhost/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+#                       production:  --url https://docs-mcp.company.internal/mcp
+```
+
+…or hand-edit `~/.codex/config.toml` (see `clients/codex-config.example.toml`):
+
+```toml
+[mcp_servers.docs]
+url = "http://localhost/mcp"             # production: "https://docs-mcp.company.internal/mcp"
+bearer_token_env_var = "DOCS_MCP_TOKEN"  # the NAME of an env var — not the token itself
+startup_timeout_sec = 20
+```
+
+**3. User: export the token and run Codex** (the var must exist in the shell that starts `codex` —
+HTTP MCP servers get no env injection):
+
+```bash
+export DOCS_MCP_TOKEN=tok_alice_xxxx
+codex
+```
+
+**4. Verify** — inside Codex run `/mcp`; you should see `docs` connected with `list_docs`,
+`read_doc`, `search_docs`, `semantic_search`. The bundled skill (`clients/skill/SKILL.md`) is
+invoked automatically when a prompt mentions docs/specs/runbooks. Manage with `codex mcp list`,
+`codex mcp get docs`, `codex mcp remove docs`.
+
+**Troubleshooting**
+- Connected but **`Tools: (none)`** / won't initialize → older Codex build: add
+  `experimental_use_rmcp_client = true` at the top of `config.toml`, or upgrade (`codex --version`).
+- Still failing → use the `mcp-remote` stdio bridge (works on any Codex version):
+  ```toml
+  [mcp_servers.docs]
+  command = "npx"
+  args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
+          "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
+  env = { "DOCS_MCP_TOKEN" = "tok_alice_xxxx" }
+  ```
+  `--allow-http` is required for plain `http://`; drop it for an `https://` production URL.
+- **4xx on connect** → ensure the server's `ALLOWED_HOSTS` includes the hostname the client uses
+  (`localhost` is allowed by default) and that your reverse proxy forwards the `Authorization`
+  header (Caddy does by default).
 
 ## Configuration
 

@@ -1,8 +1,32 @@
-# Add to your OpenAI Codex config (e.g. ~/.codex/config.toml). Put the token in
-# the environment variable named below — do not paste it inline.
+# OpenAI Codex client config for the Documentation MCP Server.
+# Add this to ~/.codex/config.toml. The bearer token goes in an ENVIRONMENT
+# VARIABLE named below — never paste the token string into this file.
 #
-#   export DOCS_MCP_TOKEN=tok_yourname_xxxx
+# Quick add (writes the [mcp_servers.docs] block below for you):
+#   codex mcp add docs --url http://localhost/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+#   #            production:  --url https://docs-mcp.company.internal/mcp
+#
+# Then export your token and launch Codex:
+#   export DOCS_MCP_TOKEN=tok_yourname_xxxx     # the token your operator gave you
+#   codex                                       # inside Codex, run /mcp to confirm it connected
 
 [mcp_servers.docs]
-url = "https://docs-mcp.company.internal/mcp"
-bearer_token_env_var = "DOCS_MCP_TOKEN"
+url = "http://localhost/mcp"             # local; production: "https://docs-mcp.company.internal/mcp"
+bearer_token_env_var = "DOCS_MCP_TOKEN"  # NAME of the env var holding your tok_... (not the token)
+startup_timeout_sec = 20                 # optional (default 10); headroom for proxy/cold start
+
+# Codex reads $DOCS_MCP_TOKEN at launch and sends:  Authorization: Bearer <token>
+# The variable MUST exist in the shell that starts `codex` (HTTP MCP servers get no env injection).
+
+# Older Codex builds gate HTTP MCP behind a top-level flag — uncomment if `/mcp`
+# shows the server connected with no tools, or it won't initialize:
+# experimental_use_rmcp_client = true
+
+# --- Fallback: stdio bridge via mcp-remote (needs Node/npx) -------------------
+# Use only if the native HTTP client above misbehaves. `--allow-http` is required
+# for plain http:// (drop it for an https:// production URL).
+# [mcp_servers.docs]
+# command = "npx"
+# args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
+#         "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
+# env = { "DOCS_MCP_TOKEN" = "tok_yourname_xxxx" }

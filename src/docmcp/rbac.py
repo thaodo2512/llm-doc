@@ -7,12 +7,17 @@ whole tree. Prefix matching is segment-aware: "/pub" does NOT match "/public".
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Iterable
 
 
 def _norm(path: str) -> str:
-    """Normalize to a leading-slash, no-trailing-slash logical path."""
-    return "/" + path.strip().strip("/")
+    """Normalize to a leading-slash logical path, collapsing `.`/`..` segments.
+
+    Collapsing `..` here keeps prefix membership honest: "/public/../secret" must
+    not be treated as living under "/public".
+    """
+    return posixpath.normpath("/" + path.strip().strip("/"))
 
 
 def is_allowed(path: str, allowed_prefixes: Iterable[str]) -> bool:

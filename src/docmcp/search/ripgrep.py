@@ -17,20 +17,9 @@ from ..config import Settings
 from ..types import Hit
 from .base import MAX_SNIPPET, SearchBackend
 
-# Never surface the index/manifest/db as search results.
-_EXCLUDES = ["!/index.json", "!/index.md", "!/.manifest.json", "!*.sqlite*"]
-
-
-def _include_globs(allowed_prefixes: list[str]) -> list[str]:
-    """Anchored include globs from allowed prefixes. Empty => unrestricted ('/')."""
-    globs: list[str] = []
-    for prefix in allowed_prefixes:
-        norm = prefix.strip().strip("/")
-        if norm == "":
-            return []  # "/" grants the whole tree
-        globs.append(f"/{norm}/**")
-        globs.append(f"/{norm}")
-    return globs
+# Never surface the index/manifest/db as search results. Basename-style globs
+# match at any depth (no leading slash), so nested copies are excluded too.
+_EXCLUDES = ["!index.json", "!index.md", "!.manifest.json", "!*.sqlite*"]
 
 
 class RipgrepBackend(SearchBackend):
@@ -38,17 +27,36 @@ class RipgrepBackend(SearchBackend):
         self.root = Path(settings.doc_root).expanduser().resolve()
         self.rg = rg_binary
 
+    def _search_roots(self, allowed_prefixes: list[str]) -> list[str]:
+        """Filesystem subtrees to search, derived from allowed prefixes.
+
+        Scoping by *search path* (rather than ripgrep include-globs, which are
+        anchored and don't match an absolute search root) precisely restricts the
+        search to the caller's entitled subtrees. The RBAC post-filter is the
+        authoritative safety net.
+        """
+        roots: list[str] = []
+        for prefix in allowed_prefixes:
+            norm = prefix.strip().strip("/")
+            if norm == "":
+                return [str(self.root)]  # "/" grants the whole tree
+            candidate = self.root / norm
+            if candidate.exists():
+                roots.append(str(candidate))
+        return roots
+
     def search(self, query: str, allowed_prefixes: list[str], limit: int = 10) -> list[Hit]:
         query = (query or "").strip()
         if not query or not allowed_prefixes or not self.root.is_dir():
             return []
+        search_roots = self._search_roots(allowed_prefixes)
+        if not search_roots:
+            return []
 
         cmd = [self.rg, "--json", "-S", "-F", "--max-count", str(max(limit, 1))]
-        for glob in _include_globs(allowed_prefixes):
-            cmd += ["-g", glob]
         for glob in _EXCLUDES:
             cmd += ["-g", glob]
-        cmd += ["--", query, str(self.root)]
+        cmd += ["--", query, *search_roots]
 
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode not in (0, 1):  # 1 = no matches (not an error)

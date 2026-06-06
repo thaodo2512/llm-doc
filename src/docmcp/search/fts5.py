@@ -45,8 +45,10 @@ def build_fts5_index(settings: Settings, entries: list[IndexEntry]) -> None:
 
 
 def _fts_phrase(query: str) -> str:
-    # Treat the whole query as a literal phrase; escape embedded quotes.
-    return '"' + query.replace('"', '""') + '"'
+    # Treat the whole query as a literal phrase; escape embedded quotes and drop
+    # control/NUL chars (a NUL would raise sqlite3.OperationalError — query-of-death).
+    cleaned = "".join(ch for ch in query if ch == "\t" or ch >= " ")
+    return '"' + cleaned.replace('"', '""') + '"'
 
 
 def _prefix_filter(allowed_prefixes: list[str]) -> tuple[list[str], list[str]]:

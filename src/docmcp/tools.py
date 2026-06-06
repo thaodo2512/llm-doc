@@ -46,12 +46,16 @@ class DocTools:
         end_line: int | None,
         allowed_prefixes: list[str],
     ) -> DocContent:
-        if not rbac.is_allowed(path, allowed_prefixes):
-            raise ToolError(f"Access denied: {path} is outside your allowed prefixes.")
+        # Canonicalize through the (containment-checked) resolver first, so RBAC is
+        # evaluated on the real logical path rather than a `..`-laden alias.
         try:
-            return self.store.read(path, start_line, end_line)
+            canonical = self.store.to_logical(self.store.resolve(path))
         except PathTraversalError:
             raise ToolError(f"Access denied: {path}") from None
+        if not rbac.is_allowed(canonical, allowed_prefixes):
+            raise ToolError(f"Access denied: {path} is outside your allowed prefixes.")
+        try:
+            return self.store.read(canonical, start_line, end_line)
         except FileNotFoundError:
             raise ToolError(f"Not found: {path}") from None
 

@@ -1,0 +1,8 @@
+# Add to your OpenAI Codex config (e.g. ~/.codex/config.toml). Put the token in
+# the environment variable named below — do not paste it inline.
+#
+#   export DOCS_MCP_TOKEN=tok_yourname_xxxx
+
+[mcp_servers.internal_docs]
+url = "https://docs-mcp.company.internal/mcp"
+bearer_token_env_var = "DOCS_MCP_TOKEN"

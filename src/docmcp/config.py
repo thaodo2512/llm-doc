@@ -14,6 +14,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 try:  # python-dotenv is a base dependency; degrade gracefully if missing.
     from dotenv import load_dotenv
@@ -32,6 +33,31 @@ def _split_csv(value: str) -> list[str]:
 
 def _as_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: str, *, name: str, minimum: int, maximum: int | None = None) -> int:
+    try:
+        result = int(value)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from None
+    if result < minimum or (maximum is not None and result > maximum):
+        bound = f">= {minimum}" if maximum is None else f"in [{minimum}, {maximum}]"
+        raise ValueError(f"{name} must be {bound}, got {result}")
+    return result
+
+
+def _redact_url(url: str) -> str:
+    """Strip any user:password@ credentials from a URL for safe printing."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if parts.username or parts.password:
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return urlunsplit((parts.scheme, f"***@{host}", parts.path, parts.query, parts.fragment))
+    return url
 
 
 @dataclass(frozen=True)
@@ -82,7 +108,7 @@ class Settings:
             doc_root=Path(env.get("DOC_ROOT", "/srv/docs/curated")).expanduser(),
             source_dirs=_split_csv(env.get("SOURCE_DIRS", "/srv/docs/raw")),
             bind_host=env.get("BIND_HOST", "127.0.0.1"),
-            bind_port=int(env.get("BIND_PORT", "8080")),
+            bind_port=_as_int(env.get("BIND_PORT", "8080"), name="BIND_PORT", minimum=1, maximum=65535),
             tokens_file=Path(env.get("TOKENS_FILE", "/srv/docs/tokens.json")).expanduser(),
             search_backend=backend,
             fts5_db=Path(env.get("FTS5_DB", "/srv/docs/index.sqlite")).expanduser(),
@@ -90,7 +116,9 @@ class Settings:
             qdrant_url=env.get("QDRANT_URL", "http://qdrant:6333"),
             openai_api_key=env.get("OPENAI_API_KEY", ""),
             openai_embed_model=env.get("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
-            embed_chunk_tokens=int(env.get("EMBED_CHUNK_TOKENS", "512")),
+            embed_chunk_tokens=_as_int(
+                env.get("EMBED_CHUNK_TOKENS", "512"), name="EMBED_CHUNK_TOKENS", minimum=1
+            ),
             allowed_origins=_split_csv(env.get("ALLOWED_ORIGINS", "")),
             allowed_hosts=_split_csv(env.get("ALLOWED_HOSTS", "localhost,127.0.0.1")),
         )
@@ -101,6 +129,7 @@ class Settings:
         for key in ("doc_root", "tokens_file", "fts5_db"):
             data[key] = str(getattr(self, key))
         data["openai_api_key"] = "***set***" if self.openai_api_key else ""
+        data["qdrant_url"] = _redact_url(self.qdrant_url)  # may carry credentials
         data["index_json"] = str(self.index_json)
         data["fts5_db"] = str(self.fts5_db)
         return data

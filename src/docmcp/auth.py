@@ -8,6 +8,7 @@ comparison and never logged (brief §7.3 / §12).
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import time
@@ -26,7 +27,13 @@ class JsonFileTokenVerifier(TokenVerifier):
     def __init__(self, tokens_file: str | Path):
         super().__init__()
         self._path = Path(tokens_file)
-        self._tokens = self._load()
+        tokens = self._load()
+        # Precompute fixed-width SHA-256 digests so comparison is constant time and
+        # type-safe for arbitrary (incl. non-ASCII) input.
+        self._digests: list[tuple[bytes, dict]] = [
+            (hashlib.sha256(token.encode("utf-8")).digest(), record)
+            for token, record in tokens.items()
+        ]
 
     def _load(self) -> dict[str, dict]:
         if not self._path.is_file():
@@ -34,22 +41,26 @@ class JsonFileTokenVerifier(TokenVerifier):
         data = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("tokens file must be a JSON object of token -> {user, allowed_prefixes}")
-        for record in data.values():
+        for index, record in enumerate(data.values()):  # index, not token, to avoid leaking secrets
+            if not isinstance(record, dict):
+                raise ValueError(f"token entry #{index} must be a JSON object")
             if "user" not in record or "allowed_prefixes" not in record:
-                raise ValueError("each token entry needs 'user' and 'allowed_prefixes'")
+                raise ValueError(f"token entry #{index} needs 'user' and 'allowed_prefixes'")
+            if not isinstance(record["allowed_prefixes"], list):
+                raise ValueError(f"token entry #{index}: 'allowed_prefixes' must be a list")
+            expires_at = record.get("expires_at")
+            if expires_at is not None and not isinstance(expires_at, (int, float)):
+                raise ValueError(f"token entry #{index}: 'expires_at' must be a number or absent")
         return data
 
     async def verify_token(self, token: str) -> AccessToken | None:
         # Compare against every known token without early-return, so the work is
-        # independent of which (if any) token matches. compare_digest is constant
-        # time for equal-length inputs.
+        # independent of which (if any) token matches.
+        token_digest = hashlib.sha256(token.encode("utf-8")).digest()
         matched: dict | None = None
-        for known, record in self._tokens.items():
-            try:
-                if hmac.compare_digest(known, token):
-                    matched = record
-            except TypeError:
-                return None  # non-ASCII token, etc.
+        for known_digest, record in self._digests:
+            if hmac.compare_digest(known_digest, token_digest):
+                matched = record
         if matched is None:
             return None
 

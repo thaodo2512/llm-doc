@@ -39,6 +39,12 @@ class DocStore:
         rel = logical_path.strip().lstrip("/")
         if "\x00" in rel:
             raise PathTraversalError(logical_path)
+        # Reject parent-traversal components outright. `..` never escapes DOC_ROOT
+        # (the containment check below catches that), but an *intra-root* `..` such
+        # as "/public/../secret" would desync the RBAC prefix check from the real
+        # resolved path — so forbid it here at the single resolver.
+        if ".." in rel.replace("\\", "/").split("/"):
+            raise PathTraversalError(logical_path)
         candidate = (self._root / rel).resolve()
         if candidate != self._root and not candidate.is_relative_to(self._root):
             raise PathTraversalError(logical_path)

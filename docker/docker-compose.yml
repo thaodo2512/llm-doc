@@ -1,0 +1,87 @@
+name: internal-docs-mcp
+
+# Layout:
+#   docs-mcp  — the FastMCP server (always on). NOT published; reached only by caddy.
+#   caddy     — TLS reverse proxy; the ONLY exposed entry point.
+#   ingest    — run on demand to (re)build the doc store:  docker compose run --rm ingest --full
+#   qdrant    — optional; starts only with:  docker compose --profile vector up
+# The curated doc store + index (+ FTS5 db) live in the shared `docstore` volume.
+
+services:
+  docs-mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: server
+    image: internal-docs-mcp:server
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8080"
+      DOC_ROOT: /srv/docs/curated
+      TOKENS_FILE: /srv/tokens.json
+      FTS5_DB: /srv/docs/index.sqlite
+    volumes:
+      - docstore:/srv/docs:ro
+      # tokens.json lives OUTSIDE the read-only docstore mount (can't create a
+      # mountpoint inside a :ro volume).
+      - ../tokens.json:/srv/tokens.json:ro
+    expose:
+      - "8080"          # internal only — intentionally no `ports:` mapping
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - docs-mcp
+    environment:
+      # Default to plain HTTP on :80. Set DOMAIN=docs.company.internal to enable
+      # Caddy's automatic HTTPS for that hostname.
+      DOMAIN: ${DOMAIN:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  ingest:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: ingest
+    image: internal-docs-mcp:ingest
+    profiles: ["ingest"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      SOURCE_DIRS: /srv/raw
+      DOC_ROOT: /srv/docs/curated
+      FTS5_DB: /srv/docs/index.sqlite
+      DOCLING_ARTIFACTS_PATH: /opt/docling/models
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ../raw:/srv/raw:ro          # mount your raw sources here
+      - docstore:/srv/docs          # writes curated/ + index + index.sqlite
+      - docling_models:/opt/docling/models
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["vector"]
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    expose:
+      - "6333"
+
+volumes:
+  docstore:
+  caddy_data:
+  caddy_config:
+  docling_models:
+  qdrant_data:

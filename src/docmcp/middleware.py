@@ -25,13 +25,15 @@ class OriginValidationMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            origin = None
-            for key, value in scope.get("headers", []):
-                if key == b"origin":
-                    origin = value.decode("latin-1")
-                    break
-            if origin is not None and origin not in self.allowed:
-                response = PlainTextResponse("Forbidden origin", status_code=403)
-                await response(scope, receive, send)
+            origins = [
+                value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+                if key == b"origin"
+            ]
+            # Reject ambiguous (multiple) Origins, or any single Origin not allowed.
+            # No Origin header (typical for CLI MCP clients) passes through.
+            forbidden = len(origins) > 1 or (len(origins) == 1 and origins[0] not in self.allowed)
+            if forbidden:
+                await PlainTextResponse("Forbidden origin", status_code=403)(scope, receive, send)
                 return
         await self.app(scope, receive, send)

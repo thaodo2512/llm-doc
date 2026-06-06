@@ -1,0 +1,20 @@
+# Reverse proxy: the only exposed entry point. Terminates TLS and forwards to
+# the (unpublished) docs-mcp service over the internal compose network.
+#
+# - DOMAIN=:80 (default)        -> plain HTTP on :80 (fine for a VPN-internal demo).
+# - DOMAIN=docs.company.internal -> Caddy obtains/serves automatic HTTPS for it.
+{$DOMAIN} {
+	encode gzip
+
+	# Basic per-token rate limiting (brief §12) needs the caddy-ratelimit plugin,
+	# which is not in the stock image. To enable, build a custom Caddy with
+	# github.com/mholt/caddy-ratelimit and uncomment:
+	#
+	# rate_limit {
+	#     key    {http.request.header.Authorization}
+	#     events 60
+	#     window 1m
+	# }
+
+	reverse_proxy docs-mcp:8080
+}

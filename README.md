@@ -27,6 +27,20 @@ Codex (laptop) --HTTPS + bearer token--> [ Caddy TLS proxy ] --> docs-mcp (FastM
 All tools are filtered to the caller's `allowed_prefixes`; `read_doc` *denies* (not silently empties)
 a disallowed path. Logical paths are rooted at the doc store and start with `/`.
 
+## Helper script (`./docmcp.sh`)
+
+A Linux/macOS helper wraps the whole loop:
+
+```bash
+./docmcp.sh setup                 # venv + deps + .env + tokens.json (+ ripgrep check)
+./docmcp.sh add /path/to/docs     # copy files/dirs into raw/
+./docmcp.sh ingest --full         # build the curated doc store + index
+./docmcp.sh serve                 # run the MCP server (one terminal)
+./docmcp.sh test                  # exercise the running server (another terminal)
+./docmcp.sh token alice /public /team-fw   # mint a scoped bearer token
+./docmcp.sh status                # config + index summary
+```
+
 ## Quick start (local dev)
 
 ```bash

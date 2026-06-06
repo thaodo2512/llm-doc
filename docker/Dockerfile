@@ -38,7 +38,7 @@ RUN pip install ".[parse,vector]"
 # Prefetch Docling's PDF models so the deployed host needs no internet (air-gapped).
 ENV DOCLING_ARTIFACTS_PATH=/opt/docling/models \
     HF_HUB_OFFLINE=0
-RUN docling-tools models download -o /opt/docling/models layout tableformer
+RUN docling-tools models download -o /opt/docling/models layout tableformer rapidocr
 # OpenCV (pulled in by Docling's tableformer model) needs these native libraries
 # at runtime; the slim base lacks them, so `import cv2` fails with
 # "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as

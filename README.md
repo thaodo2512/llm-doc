@@ -3,7 +3,7 @@
 A self-hosted [MCP](https://modelcontextprotocol.io) server that exposes a documentation corpus
 to coding agents (e.g. OpenAI Codex) over **Streamable HTTP**, with per-user
 **bearer-token auth** and **path-prefix RBAC**. An offline ingestion pipeline turns mixed raw
-sources (Git repos, PDFs, slide decks, HTML, Markdown) into a curated Markdown doc store plus a
+sources (PDFs, Office docs, HTML, Markdown, source code, and any other text file) into a curated Markdown doc store plus a
 search index. Primary retrieval is **keyword/full-text search** (ripgrep or SQLite FTS5); an
 optional **vector** layer (Qdrant + OpenAI embeddings) is built but **off by default**.
 

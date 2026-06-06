@@ -30,17 +30,45 @@ def normalize_text(raw: str) -> str:
 
 
 def parse_file(path: Path) -> Parsed | None:
-    """Return curated Markdown for `path`, or None if the type is unsupported."""
+    """Return curated Markdown for `path`.
+
+    Markdown/text passthrough, then the rich parsers (Docling documents,
+    tree-sitter code). Anything still unhandled falls back to plain text, so any
+    *textual* file (`.rst`, `.yaml`, `.json`, `.cfg`, an unlisted language, …) is
+    still indexed and searchable. Only binary files (detected by a NUL byte) are
+    skipped — reading those as text would index garbage.
+    """
     ext = path.suffix.lower()
     if ext in MARKDOWN_EXTS:
         return Parsed("markdown", normalize_text(_read(path)), ".md")
     if ext in TEXT_EXTS:
         return Parsed("text", normalize_text(_read(path)), ".txt")
-    return _parse_rich(path)
+    rich = _parse_rich(path)
+    if rich is not None:
+        return rich
+    return _as_text(path)
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+_TEXT_SNIFF_BYTES = 8192
+
+
+def _as_text(path: Path) -> Parsed | None:
+    """Fallback for unsupported extensions: index as plain text unless the file
+    looks binary. A NUL byte in the first chunk is the classic "not text" signal
+    (the same heuristic git uses), so images/archives/binaries are skipped."""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_TEXT_SNIFF_BYTES)
+            if b"\x00" in head:
+                return None  # binary — skip rather than index garbage
+            data = head + handle.read()
+    except OSError:
+        return None
+    return Parsed("text", normalize_text(data.decode("utf-8", errors="replace")), ".txt")
 
 
 def _parse_rich(path: Path) -> Parsed | None:

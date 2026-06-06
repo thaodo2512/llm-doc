@@ -155,7 +155,10 @@ def run_ingest(settings: Settings, *, full: bool = False) -> list[IndexEntry]:
                 }
                 processed += 1
             except Exception as exc:  # isolate one bad file from the whole run
-                print(f"[ingest] failed to process {source}: {type(exc).__name__}", file=sys.stderr)
+                print(
+                    f"[ingest] failed to process {source}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
                 failed += 1
 
     _save_manifest(settings.manifest_file, manifest)

@@ -39,4 +39,13 @@ RUN pip install ".[parse,vector]"
 ENV DOCLING_ARTIFACTS_PATH=/opt/docling/models \
     HF_HUB_OFFLINE=0
 RUN docling-tools models download -o /opt/docling/models layout tableformer
+# OpenCV (pulled in by Docling's tableformer model) needs these native libraries
+# at runtime; the slim base lacks them, so `import cv2` fails with
+# "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as
+# PDFs silently never getting indexed. Installed after the model download to keep
+# the heavy torch/model layers cached on rebuild.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
 ENTRYPOINT ["docmcp-ingest"]

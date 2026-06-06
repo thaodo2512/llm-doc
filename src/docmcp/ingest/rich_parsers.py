@@ -101,9 +101,13 @@ def parse_rich(path: Path) -> Parsed | None:
     ext = path.suffix.lower()
     if ext in DOCLING_EXTS:
         try:
-            return _parse_document(path, DOCLING_EXTS[ext])
+            import docling  # noqa: F401, PLC0415 — present only in the [parse] image
         except ImportError:
-            return None  # docling not installed (server-only image)
+            return None  # server-only install without [parse]: skip rich docs
+        # Docling IS installed: let conversion errors (incl. a missing *runtime*
+        # dep like OpenCV's libxcb) propagate so the pipeline records them as a
+        # failure instead of silently dropping the document.
+        return _parse_document(path, DOCLING_EXTS[ext])
     if ext in EXT_TO_LANG:
         return _parse_code(path, EXT_TO_LANG[ext])
     return None

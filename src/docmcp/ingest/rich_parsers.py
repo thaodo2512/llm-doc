@@ -170,10 +170,13 @@ def _extract_symbols(src: bytes, lang: str) -> list[dict]:
 
     chunks: list[dict] = []
     for node in sorted(outer, key=lambda n: n.start_byte):
-        name_node = next(
-            (n for n in names if node.start_byte <= n.start_byte and n.end_byte <= node.end_byte),
-            None,
-        )
+        # A class span contains its own name AND its methods' names; the
+        # definition's own name is the earliest-starting one. (Picking "first
+        # matching" is non-deterministic across tree-sitter capture orderings.)
+        contained = [
+            n for n in names if node.start_byte <= n.start_byte and n.end_byte <= node.end_byte
+        ]
+        name_node = min(contained, key=lambda n: n.start_byte) if contained else None
         chunks.append(
             {
                 "name": name_node.text.decode("utf-8", "replace") if name_node else "<anonymous>",

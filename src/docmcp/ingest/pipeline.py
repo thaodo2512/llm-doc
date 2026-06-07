@@ -12,7 +12,9 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
 import sys
+import traceback
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -155,10 +157,24 @@ def run_ingest(settings: Settings, *, full: bool = False) -> list[IndexEntry]:
                 }
                 processed += 1
             except Exception as exc:  # isolate one bad file from the whole run
+                # Point at the deepest application/library frame (not stdlib
+                # internals like json's decoder) so a cryptic error — e.g. a
+                # JSONDecodeError from an un-materialized Git LFS model config —
+                # names its caller instead of nowhere. DOCMCP_INGEST_DEBUG=1 prints
+                # the full traceback.
+                frames = traceback.extract_tb(exc.__traceback__)
+                informative = [
+                    f for f in frames
+                    if "site-packages" in f.filename or "docmcp" in f.filename.replace("\\", "/")
+                ]
+                frame = (informative or frames or [None])[-1]
+                where = f"  (at {frame.filename}:{frame.lineno})" if frame else ""
                 print(
-                    f"[ingest] failed to process {source}: {type(exc).__name__}: {exc}",
+                    f"[ingest] failed to process {source}: {type(exc).__name__}: {exc}{where}",
                     file=sys.stderr,
                 )
+                if os.environ.get("DOCMCP_INGEST_DEBUG"):
+                    traceback.print_exc()
                 failed += 1
 
     _save_manifest(settings.manifest_file, manifest)

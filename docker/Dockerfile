@@ -49,6 +49,17 @@ ENV DOCLING_ARTIFACTS_PATH=/opt/docling/models \
     HF_HUB_DISABLE_TELEMETRY=1 \
     DO_NOT_TRACK=1
 COPY models /opt/docling/models
+# Fail the build if any vendored model is still an un-materialized Git LFS pointer
+# (a clone without `git lfs pull`). Otherwise Docling json.loads() a pointer text
+# file at ingest time and dies with a cryptic
+#   JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+# on PDFs with tables/OCR. `grep -I` skips the large binary weights; pointer files
+# are small text starting with "version https://git-lfs.github.com/spec/...".
+RUN if grep -rIl 'git-lfs.github.com/spec' /opt/docling/models >/dev/null 2>&1; then \
+        echo 'ERROR: models/ contains un-materialized Git LFS pointers — run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        grep -rIl 'git-lfs.github.com/spec' /opt/docling/models 2>/dev/null | sed 's,^/opt/docling/models/,  models/,' >&2; \
+        exit 1; \
+    fi
 # OpenCV (pulled in by Docling's tableformer model) needs these native libraries
 # at runtime; the slim base lacks them, so `import cv2` fails with
 # "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as

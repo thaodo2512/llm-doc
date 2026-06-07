@@ -51,6 +51,19 @@ load_env() { if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi; }
 
 is_true() { case "${1:-}" in true|TRUE|True|1|yes|on) return 0;; *) return 1;; esac; }
 
+# Fail fast if any vendored model is still a Git LFS pointer (a clone without
+# `git lfs pull`). The ingest image bakes models/ at build time, so a pointer text
+# file becomes a fake "model config" and Docling dies at ingest with a cryptic
+# JSONDecodeError on PDFs with tables/OCR. Catch it here before the long build.
+check_lfs_models() {
+  [ -d "$ROOT/models" ] || return 0
+  local ptrs; ptrs="$(grep -rIl 'git-lfs.github.com/spec' "$ROOT/models" 2>/dev/null)" || true
+  if [ -n "$ptrs" ]; then
+    printf '%s\n' "$ptrs" | sed "s,^$ROOT/,  ," >&2
+    die "the vendored models above are un-materialized Git LFS pointers. Run 'git lfs install && git lfs pull', then rebuild — otherwise ingestion fails with a JSONDecodeError on PDFs with tables/OCR."
+  fi
+}
+
 # Use `image ls -q` (not `image inspect <name>`): under Docker Desktop's containerd
 # image store, `inspect` by short name:tag can spuriously report "No such image"
 # even when the image exists and runs fine.
@@ -138,7 +151,7 @@ cmd_add() {
 
 # ingest [--full]  — (re)build the curated store from raw/ in the ingestion container.
 cmd_ingest() {
-  need_docker; load_env
+  need_docker; load_env; check_lfs_models
   local profiles=(--profile ingest)
   if is_true "${ENABLE_VECTOR:-false}"; then
     profiles+=(--profile vector)
@@ -215,8 +228,8 @@ cmd_build() {
   need_docker
   case "${1:-server}" in
     server) dc build docs-mcp ;;
-    ingest) dc --profile ingest build ingest ;;
-    all)    dc build docs-mcp && dc --profile ingest build ingest ;;
+    ingest) check_lfs_models; dc --profile ingest build ingest ;;
+    all)    check_lfs_models; dc build docs-mcp && dc --profile ingest build ingest ;;
     *)      die "usage: ./docmcp.sh build [server|ingest|all]" ;;
   esac
 }

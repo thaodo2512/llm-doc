@@ -79,6 +79,12 @@ class Settings:
     allowed_origins: list[str]
     allowed_hosts: list[str]
 
+    # Resource bounds (DoS guards for authenticated callers). Defaulted so direct
+    # construction stays easy; Settings.load() always sets them from the environment.
+    max_search_limit: int = 50  # clamp for search_docs / semantic_search `limit`
+    max_read_bytes: int = 1_048_576  # most bytes read_doc will pull off disk in one call
+    max_read_lines: int = 5000  # most lines read_doc will return in one call
+
     # Index/manifest locations are derived from the doc root so they travel with it.
     @property
     def index_json(self) -> Path:
@@ -121,6 +127,15 @@ class Settings:
             ),
             allowed_origins=_split_csv(env.get("ALLOWED_ORIGINS", "")),
             allowed_hosts=_split_csv(env.get("ALLOWED_HOSTS", "localhost,127.0.0.1")),
+            max_search_limit=_as_int(
+                env.get("MAX_SEARCH_LIMIT", "50"), name="MAX_SEARCH_LIMIT", minimum=1
+            ),
+            max_read_bytes=_as_int(
+                env.get("MAX_READ_BYTES", "1048576"), name="MAX_READ_BYTES", minimum=1024
+            ),
+            max_read_lines=_as_int(
+                env.get("MAX_READ_LINES", "5000"), name="MAX_READ_LINES", minimum=1
+            ),
         )
 
     def redacted(self) -> dict:

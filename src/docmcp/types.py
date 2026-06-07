@@ -51,4 +51,9 @@ class DocContent(BaseModel):
 
     path: str
     content: str
+    # Total line count of the document. A LOWER BOUND when `truncated` is true (only
+    # the first max_bytes were scanned), so don't rely on it for exact pagination then.
     total_lines: int
+    # True when the response was capped by the server's read bounds (max bytes or
+    # max lines) — the caller is seeing a prefix/window, not the whole document.
+    truncated: bool = False

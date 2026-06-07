@@ -59,21 +59,47 @@ class DocStore:
         logical_path: str,
         start_line: int | None = None,
         end_line: int | None = None,
+        *,
+        max_lines: int = 5000,
+        max_bytes: int = 1_048_576,
     ) -> DocContent:
-        """Read a doc, optionally a 1-based inclusive line range."""
+        """Read a doc, optionally a 1-based inclusive line range.
+
+        Bounded so a single authenticated call can't exhaust server memory on a
+        pathologically large file: at most ``max_bytes`` are read off disk and at
+        most ``max_lines`` lines are returned. ``DocContent.truncated`` is set when
+        either bound clipped the result.
+        """
         fs = self.resolve(logical_path)
         if not fs.is_file():
             raise FileNotFoundError(logical_path)
-        text = fs.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        total = len(lines)
+        # Read at most max_bytes+1 *bytes* (binary, then decode) so the cap is a true
+        # byte bound — a file with few/no newlines can't be slurped whole, and
+        # multibyte UTF-8 can't inflate the read past max_bytes.
+        with fs.open("rb") as fh:
+            raw = fh.read(max_bytes + 1)
+        file_truncated = len(raw) > max_bytes
+        buf = raw[:max_bytes].decode("utf-8", errors="replace")
+        lines = buf.splitlines()
+        total = len(lines)  # a lower bound when file_truncated
+
         if start_line is None and end_line is None:
-            content = text
-        else:
-            start = max(1, start_line or 1)
-            end = min(total, end_line if end_line is not None else total)
-            content = "\n".join(lines[start - 1 : end]) if start <= end else ""
-        return DocContent(path=logical_path, content=content, total_lines=total)
+            if total <= max_lines and not file_truncated:
+                # Common case: a normal-sized doc — return it verbatim.
+                return DocContent(path=logical_path, content=buf, total_lines=total)
+            content = "\n".join(lines[:max_lines])
+            return DocContent(
+                path=logical_path, content=content, total_lines=total, truncated=True
+            )
+
+        start = max(1, start_line or 1)
+        end = total if end_line is None else min(end_line, total)
+        window_truncated = file_truncated or (end - start + 1) > max_lines
+        end = min(end, start + max_lines - 1)  # cap the window to max_lines
+        content = "\n".join(lines[start - 1 : end]) if start <= end else ""
+        return DocContent(
+            path=logical_path, content=content, total_lines=total, truncated=window_truncated
+        )
 
     def load_index(self) -> list[IndexEntry]:
         """Load index.json (empty list if it does not exist yet)."""

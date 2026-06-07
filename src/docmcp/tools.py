@@ -55,14 +55,29 @@ class DocTools:
         if not rbac.is_allowed(canonical, allowed_prefixes):
             raise ToolError(f"Access denied: {path} is outside your allowed prefixes.")
         try:
-            return self.store.read(canonical, start_line, end_line)
+            return self.store.read(
+                canonical,
+                start_line,
+                end_line,
+                max_lines=self.settings.max_read_lines,
+                max_bytes=self.settings.max_read_bytes,
+            )
         except FileNotFoundError:
             raise ToolError(f"Not found: {path}") from None
 
     # -- search ---------------------------------------------------------------
+    def _clamp_limit(self, limit: int) -> int:
+        # An authenticated caller can ask for an arbitrarily large limit; clamp it
+        # so one request can't fan out unboundedly.
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError, OverflowError):  # incl. inf/nan coercion
+            limit = 10
+        return max(1, min(limit, self.settings.max_search_limit))
+
     def do_search(self, query: str, limit: int, allowed_prefixes: list[str]) -> list[Hit]:
         backend = self._get_search_backend()
-        return backend.search(query, allowed_prefixes, limit)
+        return backend.search(query, allowed_prefixes, self._clamp_limit(limit))
 
     def _get_search_backend(self):
         if self._search is None:
@@ -79,7 +94,7 @@ class DocTools:
             )
         from .search.vector import VectorSearch  # noqa: PLC0415 (lazy: optional deps)
 
-        return VectorSearch(self.settings).search(query, allowed_prefixes, limit)
+        return VectorSearch(self.settings).search(query, allowed_prefixes, self._clamp_limit(limit))
 
 
 def _caller_prefixes() -> list[str]:
@@ -105,7 +120,7 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
     async def search_docs(query: str, limit: int = 10) -> list[Hit]:
         """Keyword/full-text search. Returns {path, line, snippet, score} hits
         restricted to your allowed prefixes. Use exact terms: code symbols,
-        config keys, error strings."""
+        config keys, error strings. `limit` is capped server-side."""
         return tools.do_search(query, limit, _caller_prefixes())
 
     @mcp.tool
@@ -113,7 +128,9 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
         path: str, start_line: int | None = None, end_line: int | None = None
     ) -> DocContent:
         """Read a document (optionally a 1-based inclusive line range). Returns
-        {path, content, total_lines}. Denied if `path` is outside your prefixes."""
+        {path, content, total_lines, truncated}. Large reads are bounded; when
+        `truncated` is true, request a narrower line range. Denied if `path` is
+        outside your prefixes."""
         return tools.do_read(path, start_line, end_line, _caller_prefixes())
 
     @mcp.tool

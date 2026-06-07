@@ -105,8 +105,10 @@ reachable. Choose how it's exposed in `.env` (pick one profile):
 - **Internal network over VPN (default, simplest):** reach the server by its **raw IP** over plain
   HTTP — nothing to install on client laptops (no TLS cert to trust). Set `HTTP_BIND=0.0.0.0` and
   `ALLOW_PLAINTEXT_HTTP=true`, add the server's IP to `ALLOWED_HOSTS`, and point clients at
-  `http://<server-ip>/mcp`. Bearer tokens are **not** encrypted on the wire, so use this **only on a
-  trusted private network** you control (e.g. reachable solely over VPN).
+  `http://<server-ip>/mcp`. To publish on a non-default port, set `HTTP_PORT=8080` →
+  `http://<server-ip>:8080/mcp` (use `HTTP_PORT`, **not** `BIND_PORT` or `DOMAIN=:port`). Bearer
+  tokens are **not** encrypted on the wire, so use this **only on a trusted private network** you
+  control (e.g. reachable solely over VPN).
 - **Public / untrusted network (HTTPS):** set `DOMAIN=docs-mcp.company.internal` (Caddy serves
   automatic HTTPS on 443; `:80` redirects) **and** `HTTP_BIND=0.0.0.0`. Needs the hostname
   resolvable/reachable for ACME (or a DNS-01 setup).
@@ -308,10 +310,16 @@ Server (see `.env.example`): `DOC_ROOT`, `SOURCE_DIRS`, `BIND_HOST`/`BIND_PORT`,
 `OPENAI_EMBED_MODEL`, `EMBED_CHUNK_TOKENS`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`, `TOKEN_TTL`.
 
 Network exposure (consumed by `docmcp.sh` / Caddy — see the [profiles above](#deploy-to-a-linux-server-x86_64)):
-`HTTP_BIND` (host interface the plaintext `:80` listener binds to), `DOMAIN` (a hostname switches
-Caddy to automatic HTTPS), and `ALLOW_PLAINTEXT_HTTP` (conscious opt-in to publish plaintext off
-loopback on a trusted/VPN network). Resource bounds (DoS guards): `MAX_SEARCH_LIMIT`,
-`MAX_READ_BYTES`, `MAX_READ_LINES`.
+`HTTP_BIND` (host interface the plaintext listener binds to), `HTTP_PORT`/`HTTPS_PORT` (client-facing
+published port numbers; default 80/443), `DOMAIN` (a hostname switches Caddy to automatic HTTPS), and
+`ALLOW_PLAINTEXT_HTTP` (conscious opt-in to publish plaintext off loopback on a trusted/VPN network).
+Resource bounds (DoS guards): `MAX_SEARCH_LIMIT`, `MAX_READ_BYTES`, `MAX_READ_LINES`.
+
+> **Docker vs. bare run:** `BIND_HOST`/`BIND_PORT` set the in-container app listener and are **pinned**
+> by `docker-compose.yml` on the Docker path (editing them in `.env` only affects a bare `uv run
+> docmcp-server`). To change the **client-facing** port on Docker, set `HTTP_PORT` — not `BIND_PORT`.
+> Note also that compose interpolates `${HTTP_BIND}`/`${DOMAIN}`/`${HTTP_PORT}` from `.env`, so drive
+> the stack through `./docmcp.sh` (a bare `docker compose up` won't load the repo-root `.env`).
 
 ## Testing
 

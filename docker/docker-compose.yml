@@ -43,13 +43,14 @@ services:
       DOMAIN: ${DOMAIN:-:80}
     ports:
       # HTTP_BIND defaults to LOOPBACK here, but the shipped .env sets it to 0.0.0.0
-      # for the internal-network (VPN, raw IP) profile. Publishing plaintext :80 off
+      # for the internal-network (VPN, raw IP) profile. Publishing plaintext off
       # loopback exposes bearer tokens in cleartext, so `docmcp.sh serve` only allows
       # it with DOMAIN=<host> (HTTPS) or an explicit ALLOW_PLAINTEXT_HTTP=true opt-in
-      # (trusted private network only). HTTPS on 443 is encrypted, so it binds all
-      # interfaces.
-      - "${HTTP_BIND:-127.0.0.1}:80:80"
-      - "443:443"
+      # (trusted private network only). HTTPS is encrypted, so it binds all interfaces.
+      # HTTP_PORT/HTTPS_PORT set the published (client-facing) port numbers; Caddy
+      # always listens on container :80/:443, so these need no Caddyfile change.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

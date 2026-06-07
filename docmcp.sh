@@ -27,7 +27,14 @@ die()  { printf "%s\n" "${C_R}error:${C_0} $*" >&2; exit 1; }
 # --- helpers ----------------------------------------------------------------
 # Force the project name (-p) so the network/volume names are deterministic even
 # if the user has COMPOSE_PROJECT_NAME set in their environment.
-dc() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
+# Pass --env-file so ${VAR} interpolation in the compose file resolves from the
+# repo-root .env regardless of the caller's cwd (compose otherwise auto-discovers
+# .env next to the compose file, i.e. docker/.env, not repo root).
+dc() {
+  local ef=(); [ -f "$ROOT/.env" ] && ef=(--env-file "$ROOT/.env")
+  # ${ef[@]+...} keeps this safe under `set -u` with an empty array on bash 3.2 (macOS).
+  docker compose -p "$PROJECT" ${ef[@]+"${ef[@]}"} -f "$COMPOSE_FILE" "$@"
+}
 
 need_docker() {
   command -v docker >/dev/null 2>&1 \
@@ -72,10 +79,13 @@ PY
 
 # The URL a user points their MCP client at (served by caddy).
 public_url() {
-  local d="${DOMAIN:-:80}"
+  local d="${DOMAIN:-}" port="${HTTP_PORT:-80}"
   case "$d" in
-    ""|:80)  printf "http://localhost/mcp" ;;
-    :*)      printf "http://localhost%s/mcp" "$d" ;;   # custom port, e.g. :8081
+    ""|:*)   # plaintext HTTP (no hostname); Caddy publishes on $HTTP_PORT
+             case "$port" in
+               80) printf "http://localhost/mcp" ;;
+               *)  printf "http://localhost:%s/mcp" "$port" ;;
+             esac ;;
     *)       printf "https://%s/mcp" "$d" ;;           # real hostname -> Caddy TLS
   esac
 }
@@ -148,6 +158,14 @@ cmd_ingest() {
 cmd_serve() {
   need_docker; load_env
   server_image_exists || die "build the image first: ./docmcp.sh setup"
+  # DOMAIN=:<port> (anything but :80) is unsupported: Caddy would listen on that
+  # container port, but compose only publishes HTTP_PORT->80 / HTTPS_PORT->443, so
+  # the endpoint would be unreachable while the helper advertised it as live. To
+  # change the published port use HTTP_PORT; for HTTPS use a hostname DOMAIN.
+  case "${DOMAIN:-}" in
+    ""|:80) ;;
+    :*) die "DOMAIN=${DOMAIN} (a bare :port) is not supported — Caddy would listen on a container port that isn't published, so clients couldn't reach it. To change the client-facing port set HTTP_PORT=<port> in .env (leave DOMAIN unset); to serve HTTPS set DOMAIN=<hostname>." ;;
+  esac
   # Network-exposure policy. Publishing the plaintext :80 listener off loopback
   # sends bearer tokens in cleartext, so it is gated (the original HIGH finding was
   # one env var away from cleartext on all interfaces):
@@ -171,11 +189,12 @@ cmd_serve() {
   info "Starting the server + reverse proxy…"
   dc up -d docs-mcp caddy
   info "Server is live at: ${C_B}$(public_url)${C_0}"
+  local portsfx=""; case "${HTTP_PORT:-80}" in 80|"") ;; *) portsfx=":${HTTP_PORT}";; esac
   case "${DOMAIN:-:80}" in
     ""|:80|:*)
       case "${HTTP_BIND:-127.0.0.1}" in
         127.0.0.1|localhost|::1) warn "no DOMAIN set: serving plain HTTP on loopback (127.0.0.1) only — local access. To reach it over your internal network/VPN by IP, set HTTP_BIND=0.0.0.0 + ALLOW_PLAINTEXT_HTTP=true (plaintext — trusted networks only); for an untrusted/public network set DOMAIN=<hostname> for HTTPS." ;;
-        *) info "reachable over your internal network at ${C_B}http://<server-ip>/mcp${C_0} (plaintext — keep this on a trusted/VPN network; add <server-ip> to ALLOWED_HOSTS)." ;;
+        *) info "reachable over your internal network at ${C_B}http://<server-ip>${portsfx}/mcp${C_0} (plaintext — keep this on a trusted/VPN network; add <server-ip> to ALLOWED_HOSTS)." ;;
       esac ;;
   esac
   info "  logs: ./docmcp.sh logs    •    stop: ./docmcp.sh stop    •    check: ./docmcp.sh test"

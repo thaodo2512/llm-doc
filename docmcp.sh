@@ -85,7 +85,7 @@ public_url() {
 cmd_setup() {
   need_docker
   info "Preparing configuration"
-  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; info "created .env (defaults are fine for a local run)"; }
+  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; info "created .env (mode 600; defaults are fine for a local run)"; }
   mkdir -p "$ROOT/raw"; [ -e "$ROOT/raw/.gitkeep" ] || : > "$ROOT/raw/.gitkeep"
   load_env
 
@@ -93,12 +93,15 @@ cmd_setup() {
   dc build docs-mcp
 
   if [ ! -f "$ROOT/tokens.json" ]; then
-    printf '{}\n' > "$ROOT/tokens.json"
+    ( umask 077; printf '{}\n' > "$ROOT/tokens.json" ); chmod 600 "$ROOT/tokens.json"
     local tok
-    tok="$(cmd_token admin /)" || die "failed to create the admin token (see the Docker error above)"
+    # Admin is the break-glass token: full access, non-expiring. Mint scoped,
+    # expiring tokens for everyone else.
+    tok="$(cmd_token admin / --expires never)" || die "failed to create the admin token (see the Docker error above)"
     [ -n "$tok" ] || die "admin-token creation produced no token — check that 'docker run' works"
-    info "created tokens.json with an 'admin' token (full access):"
+    info "created tokens.json (mode 600) with an 'admin' token — full access, non-expiring:"
     printf "    %s%s%s\n" "$C_B" "$tok" "$C_0"
+    warn "keep the admin token secret (break-glass). For others, mint scoped expiring tokens, e.g.: ./docmcp.sh token alice /public --expires 90d"
   fi
 
   info "Setup complete. Next steps:"
@@ -145,10 +148,22 @@ cmd_ingest() {
 cmd_serve() {
   need_docker; load_env
   server_image_exists || die "build the image first: ./docmcp.sh setup"
+  # Refuse to publish plaintext HTTP on the network without TLS: HTTP_BIND off
+  # loopback while DOMAIN is not a real hostname would send bearer tokens in
+  # cleartext on all interfaces (the original HIGH finding, one env var away).
+  case "${HTTP_BIND:-127.0.0.1}" in
+    127.0.0.1|localhost|::1) ;;
+    *) case "${DOMAIN:-:80}" in
+         ""|:*) die "HTTP_BIND=${HTTP_BIND} would publish plaintext HTTP on all interfaces but DOMAIN is not a hostname (no HTTPS) — bearer tokens would travel in cleartext. Set DOMAIN=<host> for TLS, or keep HTTP_BIND on loopback." ;;
+       esac ;;
+  esac
   is_true "${ENABLE_VECTOR:-false}" && dc --profile vector up -d qdrant
   info "Starting the server + reverse proxy…"
   dc up -d docs-mcp caddy
   info "Server is live at: ${C_B}$(public_url)${C_0}"
+  case "${DOMAIN:-:80}" in
+    ""|:80|:*) warn "no DOMAIN set: serving plain HTTP, published on loopback (127.0.0.1) only — local access. For network/production use set DOMAIN=<hostname> (+ HTTP_BIND=0.0.0.0) so Caddy serves HTTPS and bearer tokens aren't sent in cleartext." ;;
+  esac
   info "  logs: ./docmcp.sh logs    •    stop: ./docmcp.sh stop    •    check: ./docmcp.sh test"
 }
 
@@ -173,45 +188,102 @@ cmd_build() {
   esac
 }
 
-# token <user> [<prefix> ...]  — mint a scoped bearer token (default prefix: /).
+# token <user> [<prefix> ...] [--expires <Nd|Nh|Nm|never>]  — mint a scoped bearer
+# token. Default prefix: /. Default expiry: 90 days (override TOKEN_TTL or pass
+# --expires; use 'never' for a non-expiring token).
 cmd_token() {
-  [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token <user> [<allowed-prefix> ...]   (default prefix: /)"
+  [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token <user> [<allowed-prefix> ...] [--expires <Nd|Nh|Nm|never>]"
   need_docker
   server_image_exists || die "build the image first: ./docmcp.sh setup"
-  [ -f "$ROOT/tokens.json" ] || printf '{}\n' > "$ROOT/tokens.json"
+  [ -f "$ROOT/tokens.json" ] || { ( umask 077; printf '{}\n' > "$ROOT/tokens.json" ); }
   [ -w "$ROOT/tokens.json" ] || die "tokens.json is not writable: $ROOT/tokens.json"
-  local user="$1"; shift
+
+  # Pull a --expires flag out of the args; whatever remains is user + prefixes.
+  local expires_spec="${TOKEN_TTL:-90d}" rest=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --expires)   expires_spec="${2:-}"; shift 2 || die "--expires needs a value" ;;
+      --expires=*) expires_spec="${1#--expires=}"; shift ;;
+      *)           rest+=("$1"); shift ;;
+    esac
+  done
+  set -- "${rest[@]}"
+  local user="${1:-}"; [ -n "$user" ] && shift || die "usage: ./docmcp.sh token <user> [<prefix> ...] [--expires <Nd|Nh|Nm|never>]"
+
+  # Translate the spec into a TTL in seconds (empty string => non-expiring).
+  # Validate the numeric body BEFORE the arithmetic so a malformed spec can't crash
+  # under `set -u` or smuggle in a negative / hex / overflowing value.
+  local ttl="" n="" unit=""
+  case "$expires_spec" in
+    never|none|0|"") ttl="" ;;
+    *d) unit=86400; n="${expires_spec%d}" ;;
+    *h) unit=3600;  n="${expires_spec%h}" ;;
+    *m) unit=60;    n="${expires_spec%m}" ;;
+    *)  die "invalid --expires '$expires_spec' (use Nd | Nh | Nm | never)" ;;
+  esac
+  if [ -n "$unit" ]; then
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le 36500 ] \
+      || die "invalid --expires '$expires_spec' (use a positive Nd | Nh | Nm up to 36500, or never)"
+    ttl=$(( n * unit ))
+  fi
+
   local tok
   # Run as the host user so the bind-mounted tokens.json stays host-owned (Linux),
   # and write via a context manager so the file is always flushed/closed cleanly.
   tok="$(docker run --rm -i --user "$(id -u):$(id -g)" \
     -v "$ROOT/tokens.json:/work/tokens.json" "$SERVER_IMAGE" \
-    python - /work/tokens.json "$user" "$@" <<'PY'
-import json, os, secrets, sys
-path, user = sys.argv[1], sys.argv[2]
-prefixes = sys.argv[3:] or ["/"]
+    python - /work/tokens.json "$user" "$ttl" "$@" <<'PY'
+import json, os, secrets, sys, time
+path, user, ttl = sys.argv[1], sys.argv[2], sys.argv[3]
+prefixes = sys.argv[4:] or ["/"]
 with open(path) as fh:
     data = json.load(fh) if os.path.getsize(path) > 0 else {}
+rec = {"user": user, "allowed_prefixes": prefixes}
+if ttl:
+    rec["expires_at"] = int(time.time()) + int(ttl)
 tok = "tok_%s_%s" % (user, secrets.token_hex(12))
-data[tok] = {"user": user, "allowed_prefixes": prefixes}
+data[tok] = rec
 with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
 print(tok)
 PY
 )"
+  chmod 600 "$ROOT/tokens.json" 2>/dev/null || true
   printf '%s\n' "$tok"
+  # Notes go to stderr so a caller capturing `$(... token ...)` gets only the token.
+  if [ -n "$ttl" ]; then info "expires in ${expires_spec}" >&2; else info "non-expiring token" >&2; fi
   if is_running docs-mcp; then
-    dc restart docs-mcp >/dev/null && info "reloaded the running server (token is active)"
+    dc restart docs-mcp >/dev/null && info "reloaded the running server (token is active)" >&2
   else
     warn "start/restart the server for the new token to take effect: ./docmcp.sh serve"
   fi
 }
 
-# token-list  — show configured tokens (the file is plain JSON).
+# token-list  — show configured tokens with the secret REDACTED (user, prefixes,
+# expiry only). Never prints the full token string.
 cmd_token_list() {
   local tokfile="$ROOT/tokens.json"
   [ -f "$tokfile" ] || die "no tokens.json yet — run: ./docmcp.sh setup"
-  cat "$tokfile"
+  need_docker
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  docker run --rm -i -v "$tokfile:/work/tokens.json:ro" "$SERVER_IMAGE" \
+    python - /work/tokens.json <<'PY'
+import json, os, sys, time
+path = sys.argv[1]
+data = json.load(open(path)) if os.path.getsize(path) > 0 else {}
+if not data:
+    print("(no tokens)"); raise SystemExit
+now = time.time()
+for tok, rec in data.items():
+    shown = (tok[:8] + "…" + tok[-4:]) if len(tok) > 14 else "…"
+    exp = rec.get("expires_at")
+    if exp:
+        status = "EXPIRED" if exp < now else "expires " + time.strftime("%Y-%m-%d", time.localtime(exp))
+    else:
+        status = "no expiry"
+    print("  %-16s  user=%-12s  prefixes=%s  [%s]" % (
+        shown, rec.get("user", "?"), rec.get("allowed_prefixes"), status))
+PY
 }
 
 # token-rm <token|user>  — revoke a token (exact token string) OR every token
@@ -245,7 +317,13 @@ PY
 )" || die "failed to update tokens.json"
   [ -n "$removed" ] || die "no token or user matching '$target' (see: ./docmcp.sh token-list)"
   info "revoked:"
-  printf '%s\n' "$removed" | sed 's/^/  /'
+  # Print the revoked tokens REDACTED (don't echo full secrets to the terminal).
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if [ "${#t}" -gt 14 ]; then printf '  %s…%s\n' "${t:0:8}" "${t: -4}"; else printf '  %s\n' "$t"; fi
+  done <<EOF
+$removed
+EOF
   if is_running docs-mcp; then
     dc restart docs-mcp >/dev/null && info "reloaded the running server (revocation is live)"
   else
@@ -270,12 +348,14 @@ cmd_test() {
   local thost="localhost"
   case "${DOMAIN:-}" in ""|:*) thost="localhost" ;; *) thost="${DOMAIN}" ;; esac
   info "Testing the running server over the compose network…"
-  docker run --rm -i --network "$NET" "$SERVER_IMAGE" \
-    python - "http://docs-mcp:8080/mcp" "$token" "$thost" <<'PY'
-import asyncio, sys
+  # Pass the token via env (not argv) so it isn't visible in process listings.
+  MCP_TOKEN="$token" docker run --rm -i -e MCP_TOKEN --network "$NET" "$SERVER_IMAGE" \
+    python - "http://docs-mcp:8080/mcp" "$thost" <<'PY'
+import asyncio, os, sys
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-url, token, host = sys.argv[1], sys.argv[2], sys.argv[3]
+url, host = sys.argv[1], sys.argv[2]
+token = os.environ["MCP_TOKEN"]
 async def main():
     tr = StreamableHttpTransport(url, headers={"Authorization": f"Bearer {token}", "Host": host})
     async with Client(tr) as c:
@@ -382,7 +462,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
   ${C_B}status${C_0}                    show services, URL, and index summary
-  ${C_B}token${C_0} <user> [prefix...]  mint a bearer token (default prefix: /)
+  ${C_B}token${C_0} <user> [prefix...] [--expires <Nd|Nh|never>]  mint a bearer token (default: / , 90d)
   ${C_B}token-list${C_0}                show configured tokens
   ${C_B}token-rm${C_0} <token|user>     revoke a token (or all of a user's tokens)
   ${C_B}logs${C_0}                      follow the server + proxy logs

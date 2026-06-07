@@ -1,14 +1,17 @@
 ---
 name: doc-html-report
 description: >-
-  Generate a single self-contained HTML report containing the FULL content of the
-  internal documentation (via the docs MCP server). Use when the user asks to
-  create, build, export, or generate an HTML report/copy/bundle of the docs, or
-  wants a shareable HTML file of the documentation.
+  Generate a single self-contained HTML report containing the available content of
+  the internal documentation (via the docs MCP server), with explicit truncation
+  warnings when the server caps a read. Use when the user asks to create, build,
+  export, or generate an HTML report/copy/bundle of the docs, or wants a
+  shareable HTML file of the documentation.
 ---
 Prerequisite: the `docs` MCP server is connected (tools `list_docs`, `read_doc`,
 `search_docs`). This skill writes one self-contained **HTML file** that contains
-each document's **full content** (not a summary).
+each document's available content (not a summary). If the server returns
+`truncated=true`, the report must show a visible warning for that document; never
+silently present partial content as complete.
 
 Use the design in `templates/report.html` (in this skill folder): copy its
 `<style>` block **verbatim** and follow its structure (header → table of contents
@@ -18,8 +21,17 @@ inline CSS only, no external assets or CDNs.
 1. Call `list_docs` (no path for everything, or the prefix/topic the user gave) to
    get the documents to cover — `path`, `title`, `type`. If the user named a topic,
    use `search_docs` first and include only the matching docs.
-2. For EACH document, `read_doc` it and include its **entire content** in the
-   report. The doc store is Markdown, so **render that Markdown to HTML** — headings,
+2. For EACH document, read the content and include what the server makes
+   available. Prefer line-range paging for long docs:
+   - First call `read_doc(path, start_line=1, end_line=400)`.
+   - If `truncated=false` and `total_lines <= 400`, that result covers the doc.
+   - If the document has more lines, keep requesting the next range
+     (`401-800`, `801-1200`, ...) until all known lines are covered or a response
+     returns no new content.
+   - If any response has `truncated=true`, include the returned content but add a
+     prominent `.truncated` warning for that document explaining that server-side
+     read bounds clipped the output and the report may be incomplete.
+   The doc store is Markdown, so **render that Markdown to HTML** — headings,
    lists, tables, blockquotes, and fenced code blocks → `<pre><code>`. **Escape**
    HTML special characters in the content so it can't break the page. Never invent
    or summarize — copy what `read_doc` returns.
@@ -34,7 +46,9 @@ inline CSS only, no external assets or CDNs.
    - footer: the company and current year.
 4. Collapsing: wrap each document in `<details open>`. For long documents (roughly
    >400 lines), omit `open` so they start collapsed and the report stays navigable.
-   (The template's print styles expand everything when printed.)
+   If content was truncated, add a visible `<p class="truncated">...</p>` near the
+   top of `.doc-body`. (The template's print styles expand everything when
+   printed.)
 5. Save the file (default `docs-report.html`, or a path the user specifies) and
    print the saved file path. Each section already shows the doc's real `path` for
    citation.

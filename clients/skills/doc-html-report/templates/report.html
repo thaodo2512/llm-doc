@@ -12,7 +12,7 @@
     - the brand bar (.logo company name — drop in your own logo if you have one)
     - the hero title / kicker / sub
     - the <nav class="toc"> list   (one <li> per document)
-    - the <section class="doc"> blocks (one per document; FULL content in .doc-body)
+    - the <section class="doc"> blocks (one per document; available content in .doc-body)
     - the footer company / year
   Keep it self-contained: inline CSS only, no external assets or CDNs.
   Theme it by editing the :root variables (accent + hero colors).
@@ -157,7 +157,7 @@
         <span class="doc-path">/public/getting-started.md</span>
       </summary>
       <div class="doc-body">
-        <!-- the document's FULL content, Markdown rendered to HTML -->
+        <!-- the document's available content, Markdown rendered to HTML -->
         <h2>Getting Started</h2>
         <p>This guide gets a new machine onto the internal docs server. You need
            <code>docker</code> and a bearer token from your team lead.</p>
@@ -210,7 +210,7 @@ TARGET="${1:-release}"
 echo "building $TARGET …"
 cmake -B build -DCMAKE_BUILD_TYPE="$TARGET"
 cmake --build build -j"$(nproc)"</code></pre>
-        <p class="truncated">… full file content continues here (this skill copies the entire document).</p>
+        <p class="truncated">Content may be incomplete because the server capped this read.</p>
       </div>
     </details>
   </section>

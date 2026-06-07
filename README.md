@@ -222,7 +222,7 @@ codex
 |---|---|
 | `docs` | find & cite the right docs (search → read → cite) |
 | `doc-report` | print a terminal inventory/overview of the docs |
-| `doc-html-report` | summarize the docs into a self-contained HTML report |
+| `doc-html-report` | export authorized docs into a self-contained HTML report |
 
 Codex discovers skills as folders under `.agents/skills/`, so install the ones you want by copying
 their folders in:
@@ -231,13 +231,13 @@ their folders in:
 mkdir -p ~/.agents/skills                              # global (all projects)
 cp -R clients/skills/* ~/.agents/skills/               # all of them …
 # … or just one:     cp -R clients/skills/doc-html-report ~/.agents/skills/
-# … or per-project:  cp -R clients/skills/doc-report .agents/skills/
+# … or repo-scoped:  mkdir -p .agents/skills && cp -R clients/skills/* .agents/skills/
 ```
 
 Restart Codex, then use them via `/skills`, `$doc-report` / `$doc-html-report`, or just by asking —
-Codex auto-invokes the skill whose `description` matches. (There is no `codex skill add` command —
-skills are folder-based. Some Codex builds use `~/.codex/skills/` instead of `.agents/skills/`; if a
-skill isn't discovered, check `codex --version` and the [skills docs](https://developers.openai.com/codex/skills).)
+Codex auto-invokes the skill whose `description` matches. Skills are folder-based; if a skill isn't
+discovered, confirm it is under `.agents/skills` (repo-scoped) or `~/.agents/skills` (user-scoped),
+then restart Codex and check the [skills docs](https://developers.openai.com/codex/skills).
 
 **Troubleshooting**
 - Connected but **`Tools: (none)`** / won't initialize → older Codex build: add
@@ -248,7 +248,7 @@ skill isn't discovered, check `codex --version` and the [skills docs](https://de
   command = "npx"
   args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
           "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
-  env = { "DOCS_MCP_TOKEN" = "tok_alice_xxxx" }
+  env_vars = ["DOCS_MCP_TOKEN"]  # forward from the shell; do not paste the token here
   ```
   `--allow-http` is required for plain `http://`; drop it for an `https://` production URL.
 - **4xx on connect** → ensure the server's `ALLOWED_HOSTS` includes the hostname the client uses

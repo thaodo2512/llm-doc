@@ -29,4 +29,4 @@ startup_timeout_sec = 20                 # optional (default 10); headroom for p
 # command = "npx"
 # args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
 #         "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
-# env = { "DOCS_MCP_TOKEN" = "tok_yourname_xxxx" }
+# env_vars = ["DOCS_MCP_TOKEN"]  # forward from the shell; do not paste the token here

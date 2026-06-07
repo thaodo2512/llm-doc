@@ -14,9 +14,11 @@ Prerequisite: the `docs` MCP server is connected (tools `list_docs`, `read_doc`,
    enumerate every document — path, title, type, bytes.
 2. Group the results by top-level prefix (e.g. `/public`, `/team-fw`) and by type
    (pdf, markdown, code, text, …); count the totals.
-3. For a one-line summary per document, `read_doc` its first ~20 lines (or use its
-   title / first heading). For large sets (50+ docs), summarize per group instead
-   of per file to stay fast.
+3. For a one-line summary per document, call `read_doc` with
+   `start_line=1, end_line=20` (or use its title / first heading). If
+   `truncated=true`, still summarize from the returned prefix but mark the
+   summary as partial. For large sets (50+ docs), summarize per group instead of
+   per file to stay fast.
 4. Print a clean report:
    - a header: total docs + the count per type;
    - then, per group: the prefix heading, and each doc as

@@ -27,6 +27,47 @@ Codex (laptop) --VPN--> internal network --HTTP + bearer token (raw IP)--> [ Cad
 All tools are filtered to the caller's `allowed_prefixes`; `read_doc` *denies* (not silently empties)
 a disallowed path. Logical paths are rooted at the doc store and start with `/`.
 
+## Get the code (clone with Git LFS)
+
+This repo ships **~530 MB of Git LFS data**: the vendored offline Docling/RapidOCR models under
+`models/` (plus any binary docs under `raw/`). **You must pull the actual LFS objects, not just the
+pointer stubs** — otherwise the ingest image bakes in ~130-byte pointer text instead of the real
+models and ingestion fails with a cryptic `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`
+on PDFs with tables/OCR.
+
+```bash
+# 1) Install git-lfs ONCE per machine, BEFORE cloning:
+#    apt-get install -y git-lfs   |   dnf install git-lfs   |   brew install git-lfs
+git lfs install
+
+# 2) Clone — with git-lfs installed, the LFS objects download automatically:
+git clone <repo-url> && cd <repo>
+
+# 3) Already cloned (or git-lfs was installed late)? Materialize everything:
+git lfs pull
+```
+
+**Verify the clone is complete** — do this on every machine, especially servers:
+
+```bash
+git lfs ls-files | grep ' - '     # MUST print nothing   ( - = pointer, * = real object )
+du -sh models                     # ~530 MB if real; a few KB means pointers only
+head -c 30 models/docling-project--docling-models/config.json; echo
+                                  # real JSON ('{ ...'), NOT 'version https://git-lfs...'
+```
+
+If `git lfs pull` errors or stalls — e.g. GitHub's **LFS bandwidth quota** is exceeded, or a flaky
+connection leaves a **partial** pull (some models real, some still pointers) — copy a known-good
+`models/` from a machine that already has it, bypassing LFS entirely:
+
+```bash
+rsync -av --progress models/ user@host:<repo>/models/
+```
+
+> `./docmcp.sh build`/`ingest` **preflight** this: they refuse to build the ingest image if any
+> `models/**` file is still an LFS pointer, with a clear "run `git lfs pull`" message — so a partial
+> clone fails fast instead of producing a broken ingest.
+
 ## Quick start (Docker + `./docmcp.sh`)
 
 The **only** thing you need on the host is **Docker** (with the Compose plugin) — no Python,
@@ -90,7 +131,9 @@ uv run pytest -m "not docling"        # fast test suite
 
 ## Deploy to a Linux server (x86_64)
 
-Clone the repo on the target host and run the same helper — Docker is the only dependency:
+Clone the repo on the target host **with Git LFS** ([Get the code](#get-the-code-clone-with-git-lfs) —
+the models are LFS data, and a pointer-only clone breaks ingest), then run the same helper — Docker is
+the only dependency:
 
 ```bash
 ./docmcp.sh setup && ./docmcp.sh ingest && ./docmcp.sh serve
@@ -198,9 +241,9 @@ under `models/` via Git LFS and copied into the `ingest` image at build time. So
 build needs **no model downloads** — a clone pulls the models with the repo, and
 `HF_HUB_OFFLINE=1` keeps both build and runtime fully offline for models.
 
-> The first `git clone` pulls ~600 MB of LFS objects — clone once and keep it. The
-> image installs **CPU-only torch** (no proprietary NVIDIA CUDA wheels — smaller,
-> fully OSS).
+> The first `git clone` pulls these LFS objects — **verify they materialized**
+> ([Get the code](#get-the-code-clone-with-git-lfs)); a partial pull bakes pointer stubs and breaks
+> ingest. The image installs **CPU-only torch** (no proprietary NVIDIA CUDA wheels — smaller, fully OSS).
 
 ## Issuing tokens
 

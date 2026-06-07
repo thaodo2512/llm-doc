@@ -5,6 +5,7 @@
 # Quick add (writes the [mcp_servers.docs] block below for you):
 #   codex mcp add docs --url http://10.0.0.5/mcp --bearer-token-env-var DOCS_MCP_TOKEN
 #   #            replace 10.0.0.5 with your server's VPN/LAN IP (internal network, plain HTTP)
+#   #            custom port:   --url http://10.0.0.5:8080/mcp   (the :port must equal the server's HTTP_PORT)
 #   #            local only:    --url http://localhost/mcp
 #   #            public/HTTPS:  --url https://docs-mcp.company.internal/mcp
 #
@@ -14,6 +15,7 @@
 
 [mcp_servers.docs]
 url = "http://10.0.0.5/mcp"               # your server's VPN/LAN IP (internal network, plain HTTP).
+                                          #   custom port:  http://10.0.0.5:8080/mcp  (:port = server HTTP_PORT)
                                           #   local only:   http://localhost/mcp
                                           #   public/HTTPS: https://docs-mcp.company.internal/mcp
 bearer_token_env_var = "DOCS_MCP_TOKEN"  # NAME of the env var holding your tok_... (not the token)

@@ -242,11 +242,14 @@ Common URLs:
 |---|---|
 | Same machine as the server | `http://localhost/mcp` |
 | Trusted VPN/LAN by raw IP | `http://10.0.0.5/mcp` |
+| …with a custom server port | `http://10.0.0.5:8080/mcp` |
 | Production / public network | `https://docs-mcp.company.internal/mcp` |
 
-For non-local URLs, ensure the server's `ALLOWED_HOSTS` includes the exact hostname or IP Codex uses
-(`10.0.0.5`, `docs-mcp.company.internal`, etc.). Caddy forwards the original `Host` header through to
-the app.
+The URL's port follows the server's `HTTP_PORT`/`HTTPS_PORT` (see [Port model](#port-model)): the
+defaults (80/443) need no `:port`, while a server set to `HTTP_PORT=8080` means clients use
+`http://<ip>:8080/mcp`. For non-local URLs, ensure the server's `ALLOWED_HOSTS` includes the exact
+hostname or IP Codex uses (`10.0.0.5`, `docs-mcp.company.internal`, etc.) — **host/IP only, no port**.
+Caddy forwards the original `Host` header through to the app.
 
 **1. Operator: mint a scoped token** and send it to the user through a secure channel:
 

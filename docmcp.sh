@@ -85,7 +85,7 @@ public_url() {
 cmd_setup() {
   need_docker
   info "Preparing configuration"
-  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; info "created .env (mode 600; defaults are fine for a local run)"; }
+  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; info "created .env (mode 600). Default profile = internal network over VPN (plain HTTP by raw IP): set your server's IP in ALLOWED_HOSTS. See .env.example for the HTTPS or local-only profiles."; }
   mkdir -p "$ROOT/raw"; [ -e "$ROOT/raw/.gitkeep" ] || : > "$ROOT/raw/.gitkeep"
   load_env
 
@@ -148,13 +148,23 @@ cmd_ingest() {
 cmd_serve() {
   need_docker; load_env
   server_image_exists || die "build the image first: ./docmcp.sh setup"
-  # Refuse to publish plaintext HTTP on the network without TLS: HTTP_BIND off
-  # loopback while DOMAIN is not a real hostname would send bearer tokens in
-  # cleartext on all interfaces (the original HIGH finding, one env var away).
+  # Network-exposure policy. Publishing the plaintext :80 listener off loopback
+  # sends bearer tokens in cleartext, so it is gated (the original HIGH finding was
+  # one env var away from cleartext on all interfaces):
+  #   - DOMAIN=<hostname>          -> Caddy serves HTTPS; binding off loopback is fine.
+  #   - ALLOW_PLAINTEXT_HTTP=true  -> conscious opt-in for a TRUSTED private network
+  #                                   (e.g. reachable only over VPN). Tokens are NOT
+  #                                   encrypted; never use on untrusted/public nets.
+  #   - otherwise                  -> refuse.
   case "${HTTP_BIND:-127.0.0.1}" in
     127.0.0.1|localhost|::1) ;;
     *) case "${DOMAIN:-:80}" in
-         ""|:*) die "HTTP_BIND=${HTTP_BIND} would publish plaintext HTTP on all interfaces but DOMAIN is not a hostname (no HTTPS) — bearer tokens would travel in cleartext. Set DOMAIN=<host> for TLS, or keep HTTP_BIND on loopback." ;;
+         ""|:*)
+           if is_true "${ALLOW_PLAINTEXT_HTTP:-false}"; then
+             warn "ALLOW_PLAINTEXT_HTTP=true — serving plaintext HTTP on ${HTTP_BIND} with NO TLS. Bearer tokens travel in cleartext; only safe on a trusted private network (e.g. reachable solely over VPN). Do NOT use on an untrusted or public network."
+           else
+             die "HTTP_BIND=${HTTP_BIND} would publish plaintext HTTP off loopback but there is no TLS (DOMAIN is not a hostname) — bearer tokens would travel in cleartext. Pick one: set DOMAIN=<host> for HTTPS; or, for a TRUSTED private network (VPN/internal), set ALLOW_PLAINTEXT_HTTP=true to accept plaintext; or keep HTTP_BIND on loopback for local-only."
+           fi ;;
        esac ;;
   esac
   is_true "${ENABLE_VECTOR:-false}" && dc --profile vector up -d qdrant
@@ -162,7 +172,11 @@ cmd_serve() {
   dc up -d docs-mcp caddy
   info "Server is live at: ${C_B}$(public_url)${C_0}"
   case "${DOMAIN:-:80}" in
-    ""|:80|:*) warn "no DOMAIN set: serving plain HTTP, published on loopback (127.0.0.1) only — local access. For network/production use set DOMAIN=<hostname> (+ HTTP_BIND=0.0.0.0) so Caddy serves HTTPS and bearer tokens aren't sent in cleartext." ;;
+    ""|:80|:*)
+      case "${HTTP_BIND:-127.0.0.1}" in
+        127.0.0.1|localhost|::1) warn "no DOMAIN set: serving plain HTTP on loopback (127.0.0.1) only — local access. To reach it over your internal network/VPN by IP, set HTTP_BIND=0.0.0.0 + ALLOW_PLAINTEXT_HTTP=true (plaintext — trusted networks only); for an untrusted/public network set DOMAIN=<hostname> for HTTPS." ;;
+        *) info "reachable over your internal network at ${C_B}http://<server-ip>/mcp${C_0} (plaintext — keep this on a trusted/VPN network; add <server-ip> to ALLOWED_HOSTS)." ;;
+      esac ;;
   esac
   info "  logs: ./docmcp.sh logs    •    stop: ./docmcp.sh stop    •    check: ./docmcp.sh test"
 }

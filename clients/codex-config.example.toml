@@ -3,15 +3,19 @@
 # VARIABLE named below — never paste the token string into this file.
 #
 # Quick add (writes the [mcp_servers.docs] block below for you):
-#   codex mcp add docs --url http://localhost/mcp --bearer-token-env-var DOCS_MCP_TOKEN
-#   #            production:  --url https://docs-mcp.company.internal/mcp
+#   codex mcp add docs --url http://10.0.0.5/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+#   #            replace 10.0.0.5 with your server's VPN/LAN IP (internal network, plain HTTP)
+#   #            local only:    --url http://localhost/mcp
+#   #            public/HTTPS:  --url https://docs-mcp.company.internal/mcp
 #
 # Then export your token and launch Codex:
 #   export DOCS_MCP_TOKEN=tok_yourname_xxxx     # the token your operator gave you
 #   codex                                       # inside Codex, run /mcp to confirm it connected
 
 [mcp_servers.docs]
-url = "http://localhost/mcp"             # local; production: "https://docs-mcp.company.internal/mcp"
+url = "http://10.0.0.5/mcp"               # your server's VPN/LAN IP (internal network, plain HTTP).
+                                          #   local only:   http://localhost/mcp
+                                          #   public/HTTPS: https://docs-mcp.company.internal/mcp
 bearer_token_env_var = "DOCS_MCP_TOKEN"  # NAME of the env var holding your tok_... (not the token)
 startup_timeout_sec = 20                 # optional (default 10); headroom for proxy/cold start
 
@@ -27,6 +31,6 @@ startup_timeout_sec = 20                 # optional (default 10); headroom for p
 # for plain http:// (drop it for an https:// production URL).
 # [mcp_servers.docs]
 # command = "npx"
-# args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
+# args = ["-y", "mcp-remote", "http://10.0.0.5/mcp", "--allow-http",
 #         "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
 # env_vars = ["DOCS_MCP_TOKEN"]  # forward from the shell; do not paste the token here

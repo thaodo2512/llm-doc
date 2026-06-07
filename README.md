@@ -8,10 +8,10 @@ search index. Primary retrieval is **keyword/full-text search** (ripgrep or SQLi
 optional **vector** layer (Qdrant + OpenAI embeddings) is built but **off by default**.
 
 ```
-Codex (laptop) --HTTPS + bearer token--> [ Caddy TLS proxy ] --> docs-mcp (FastMCP)
-                                                                    |         |
-                                                              keyword     vector (optional)
-                                                                    \        /
+Codex (laptop) --VPN--> internal network --HTTP + bearer token (raw IP)--> [ Caddy ] --> docs-mcp (FastMCP)
+   (untrusted/public network instead? --HTTPS via Caddy on a hostname)        |         |
+                                                                        keyword     vector (optional)
+                                                                              \        /
                                                               curated doc store  <-- ingest (Docling, tree-sitter) <-- raw sources
 ```
 
@@ -47,10 +47,13 @@ even for non-developers:
 
 `setup` builds the slim **server** image right away; the heavier **ingest** image (Docling +
 tree-sitter) is built the first time you run `./docmcp.sh ingest`. The server is reachable at
-**`http://localhost/mcp`** through Caddy — by default that HTTP port is published on **loopback only**,
-so a default run is never reachable (or sniffable) from the network. For network/production use set
-**`DOMAIN=docs.company.internal`** *and* **`HTTP_BIND=0.0.0.0`** in `.env`: Caddy then serves automatic
-HTTPS on 443 and `:80` redirects to it. Run `./docmcp.sh help` for the full command list.
+**`http://<server-ip>/mcp`** through Caddy. The shipped `.env` default is the **internal-network
+profile**: plain HTTP reachable by the server's **raw IP** over a trusted network (e.g. VPN) — set
+`ALLOWED_HOSTS` to your server's IP and clients connect with no TLS cert to install. Bearer tokens
+travel unencrypted, so keep it on a network you trust. For an untrusted/public network set
+**`DOMAIN=docs.company.internal`** instead (Caddy then serves automatic HTTPS on 443); to keep it to
+one machine, comment out `HTTP_BIND`/`ALLOW_PLAINTEXT_HTTP` for loopback-only HTTP. See the
+[network-exposure profiles](#deploy-to-a-linux-server-x86_64) below. Run `./docmcp.sh help` for all commands.
 
 ## Document corpus (`raw/`, version-controlled via Git LFS)
 
@@ -97,10 +100,21 @@ Two images come from one `docker/Dockerfile`: a slim **`server`** (FastMCP + rip
 thing exposed, via Caddy) and a heavier **`ingest`** (Docling + tree-sitter [+ vector], run on
 demand, never exposed). The curated store + index live in a named volume shared between them, so
 `docs-mcp` binds `0.0.0.0:8080` **inside** the container but is **not published** — only Caddy is
-reachable, and its plaintext `:80` is bound to **loopback by default**. For real network exposure set
-both `DOMAIN=docs-mcp.company.internal` (automatic HTTPS on 443) **and** `HTTP_BIND=0.0.0.0` (so `:80`
-serves the HTTP→HTTPS redirect / ACME HTTP-01) in `.env` — bearer tokens must never travel over plaintext.
-`./docmcp.sh serve` refuses to publish plaintext on the network if you set `HTTP_BIND` without a `DOMAIN`.
+reachable. Choose how it's exposed in `.env` (pick one profile):
+
+- **Internal network over VPN (default, simplest):** reach the server by its **raw IP** over plain
+  HTTP — nothing to install on client laptops (no TLS cert to trust). Set `HTTP_BIND=0.0.0.0` and
+  `ALLOW_PLAINTEXT_HTTP=true`, add the server's IP to `ALLOWED_HOSTS`, and point clients at
+  `http://<server-ip>/mcp`. Bearer tokens are **not** encrypted on the wire, so use this **only on a
+  trusted private network** you control (e.g. reachable solely over VPN).
+- **Public / untrusted network (HTTPS):** set `DOMAIN=docs-mcp.company.internal` (Caddy serves
+  automatic HTTPS on 443; `:80` redirects) **and** `HTTP_BIND=0.0.0.0`. Needs the hostname
+  resolvable/reachable for ACME (or a DNS-01 setup).
+- **Local only:** comment both out — `HTTP_BIND` defaults to loopback and Caddy serves plain HTTP there.
+
+`./docmcp.sh serve` refuses to publish plaintext off loopback unless you either set a `DOMAIN`
+(HTTPS) or explicitly opt in with `ALLOW_PLAINTEXT_HTTP=true` — so cleartext on the network is always
+a conscious choice, never a default accident.
 
 Building on an arm64 box (e.g. Apple Silicon) for an amd64 target? Build the images explicitly:
 
@@ -190,15 +204,17 @@ needs a **bearer token** you minted for them plus one entry in `~/.codex/config.
 **2. User: register the server** — one command writes the config block:
 
 ```bash
-codex mcp add docs --url http://localhost/mcp --bearer-token-env-var DOCS_MCP_TOKEN
-#                       production:  --url https://docs-mcp.company.internal/mcp
+codex mcp add docs --url http://10.0.0.5/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+#  replace 10.0.0.5 with your server's VPN/LAN IP   (local only: http://localhost/mcp;
+#  public/HTTPS: https://docs-mcp.company.internal/mcp)
 ```
 
 …or hand-edit `~/.codex/config.toml` (see `clients/codex-config.example.toml`):
 
 ```toml
 [mcp_servers.docs]
-url = "http://localhost/mcp"             # production: "https://docs-mcp.company.internal/mcp"
+url = "http://10.0.0.5/mcp"              # your server's VPN/LAN IP (local: http://localhost/mcp;
+                                         #   public/HTTPS: https://docs-mcp.company.internal/mcp)
 bearer_token_env_var = "DOCS_MCP_TOKEN"  # the NAME of an env var — not the token itself
 startup_timeout_sec = 20
 ```
@@ -246,11 +262,11 @@ then restart Codex and check the [skills docs](https://developers.openai.com/cod
   ```toml
   [mcp_servers.docs]
   command = "npx"
-  args = ["-y", "mcp-remote", "http://localhost/mcp", "--allow-http",
+  args = ["-y", "mcp-remote", "http://10.0.0.5/mcp", "--allow-http",
           "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
   env_vars = ["DOCS_MCP_TOKEN"]  # forward from the shell; do not paste the token here
   ```
-  `--allow-http` is required for plain `http://`; drop it for an `https://` production URL.
+  use your server's VPN/LAN IP; `--allow-http` is required for plain `http://` (drop it for an `https://` URL).
 - **4xx on connect** → ensure the server's `ALLOWED_HOSTS` includes the hostname the client uses
   (`localhost` is allowed by default) and that your reverse proxy forwards the `Authorization`
   header (Caddy does by default).

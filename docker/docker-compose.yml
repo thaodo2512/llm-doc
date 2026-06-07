@@ -38,16 +38,16 @@ services:
     depends_on:
       - docs-mcp
     environment:
-      # Default to plain HTTP on :80. Set DOMAIN=docs.company.internal to enable
-      # Caddy's automatic HTTPS for that hostname.
+      # Plain HTTP on :80 unless DOMAIN is a hostname (then Caddy serves automatic
+      # HTTPS for it). HTTP_BIND chooses which host interface :80 is published on.
       DOMAIN: ${DOMAIN:-:80}
     ports:
-      # SECURITY: the plaintext HTTP listener is bound to LOOPBACK by default, so an
-      # unconfigured deployment never exposes bearer tokens in cleartext to the
-      # network. For real network/production use set DOMAIN=<host> (Caddy then serves
-      # HTTPS on 443) and HTTP_BIND=0.0.0.0 (so :80 serves the HTTP->HTTPS redirect,
-      # and ACME HTTP-01 if TLS-ALPN-01 on :443 isn't usable). HTTPS on 443 is
-      # encrypted, so it binds all interfaces.
+      # HTTP_BIND defaults to LOOPBACK here, but the shipped .env sets it to 0.0.0.0
+      # for the internal-network (VPN, raw IP) profile. Publishing plaintext :80 off
+      # loopback exposes bearer tokens in cleartext, so `docmcp.sh serve` only allows
+      # it with DOMAIN=<host> (HTTPS) or an explicit ALLOW_PLAINTEXT_HTTP=true opt-in
+      # (trusted private network only). HTTPS on 443 is encrypted, so it binds all
+      # interfaces.
       - "${HTTP_BIND:-127.0.0.1}:80:80"
       - "443:443"
     volumes:

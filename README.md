@@ -118,6 +118,41 @@ reachable. Choose how it's exposed in `.env` (pick one profile):
 (HTTPS) or explicitly opt in with `ALLOW_PLAINTEXT_HTTP=true` — so cleartext on the network is always
 a conscious choice, never a default accident.
 
+### Port model
+
+Clients only ever talk to **Caddy** on the one published port. The app's `8080` lives **inside** the
+container — so to change the port users connect to, set `HTTP_PORT`, **not** `BIND_PORT`.
+
+```
+  CLIENT (Codex laptop)
+     │
+     │  http(s)://<server-ip>:PORT/mcp      ·  PORT = HTTP_PORT (or HTTPS_PORT)
+     ▼
+  ┌── Caddy ─ the ONLY port exposed to the network ───────────────────────────────
+  │     binds interface ......  HTTP_BIND               (0.0.0.0 in the VPN profile)
+  │     publishes port .......  HTTP_PORT / HTTPS_PORT  (default 80 / 443)
+  │     HTTP vs HTTPS ........  DOMAIN=<hostname> → automatic HTTPS, else plain HTTP
+  └──┬────────────────────────────────────────────────────────────────────────────
+     │  reverse_proxy  →  docs-mcp:8080      (fixed, not configurable)
+     ▼
+  ┌── docs-mcp ─ FastMCP app (internal only, NOT published) ───────────────────────
+  │     app listener .........  BIND_HOST:BIND_PORT = 0.0.0.0:8080
+  │     reachable only by Caddy; BIND_* are PINNED on Docker
+  │     (they affect only a bare `uv run docmcp-server`, never the container)
+  └────────────────────────────────────────────────────────────────────────────────
+```
+
+| What you want to change | Knob | Default | Example |
+|---|---|---|---|
+| Port clients connect to | `HTTP_PORT` / `HTTPS_PORT` | `80` / `443` | `HTTP_PORT=8080` → `http://<ip>:8080/mcp` |
+| Which interface it's on | `HTTP_BIND` | `0.0.0.0` (VPN) | `127.0.0.1` = local-only |
+| Plain HTTP vs. HTTPS | `DOMAIN` | unset → HTTP | `DOMAIN=docs.company.internal` → HTTPS |
+| Caddy → app upstream | *(fixed)* | `docs-mcp:8080` | — |
+| In-container app port | `BIND_HOST`:`BIND_PORT` | `0.0.0.0:8080` | **pinned on Docker**; bare `uv run` only |
+
+> Don't use `DOMAIN=:<port>` to change the port — Caddy would listen on a container port that isn't
+> published, so clients couldn't reach it. `./docmcp.sh serve` rejects that. Use `HTTP_PORT`.
+
 Building on an arm64 box (e.g. Apple Silicon) for an amd64 target? Build the images explicitly:
 
 ```bash

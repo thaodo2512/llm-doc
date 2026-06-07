@@ -21,7 +21,7 @@ Codex (laptop) --VPN--> internal network --HTTP + bearer token (raw IP)--> [ Cad
 |------|---------|-------|
 | `list_docs(path="")` | `[{path,title,type,bytes,mtime}]` | index entries under `path` |
 | `search_docs(query, limit=10)` | `[{path,line,snippet,score}]` | keyword (ripgrep/FTS5) |
-| `read_doc(path, start_line?, end_line?)` | `{path,content,total_lines}` | denies paths outside your prefixes |
+| `read_doc(path, start_line?, end_line?)` | `{path,content,total_lines,truncated}` | denies paths outside your prefixes; `truncated=true` when the read is capped (page with a line range) |
 | `semantic_search(query, limit=10)` | `[{path,line,snippet,score}]` | disabled unless `ENABLE_VECTOR=true` |
 
 All tools are filtered to the caller's `allowed_prefixes`; `read_doc` *denies* (not silently empties)
@@ -190,46 +190,73 @@ honored. Tokens are compared in constant time and never logged.
 
 ## Codex client setup
 
-Point the [OpenAI Codex](https://developers.openai.com/codex) CLI at the running server. Each user
-needs a **bearer token** you minted for them plus one entry in `~/.codex/config.toml`. The schema
-(`url` + `bearer_token_env_var`) is the current, officially-documented one — verified against
-[OpenAI's Codex MCP docs](https://developers.openai.com/codex/mcp).
+Point the [OpenAI Codex](https://developers.openai.com/codex) CLI or IDE extension at the running
+server with Codex's native **Streamable HTTP MCP** support. Each user needs:
 
-**1. Operator: mint a token** scoped to the prefixes that user may read, and hand it over:
+- the MCP URL, ending in `/mcp`;
+- a bearer token scoped to the prefixes they may read;
+- one `[mcp_servers.docs]` entry in `~/.codex/config.toml` or a trusted project `.codex/config.toml`.
+
+Keep the token in an environment variable. Do not paste bearer tokens into `config.toml`.
+
+Common URLs:
+
+| Use case | URL |
+|---|---|
+| Same machine as the server | `http://localhost/mcp` |
+| Trusted VPN/LAN by raw IP | `http://10.0.0.5/mcp` |
+| Production / public network | `https://docs-mcp.company.internal/mcp` |
+
+For non-local URLs, ensure the server's `ALLOWED_HOSTS` includes the exact hostname or IP Codex uses
+(`10.0.0.5`, `docs-mcp.company.internal`, etc.). Caddy forwards the original `Host` header through to
+the app.
+
+**1. Operator: mint a scoped token** and send it to the user through a secure channel:
 
 ```bash
-./docmcp.sh token alice /public /team-fw     # → tok_alice_xxxx
+./docmcp.sh token alice /public /team-fw --expires 90d
 ```
 
-**2. User: register the server** — one command writes the config block:
-
-```bash
-codex mcp add docs --url http://10.0.0.5/mcp --bearer-token-env-var DOCS_MCP_TOKEN
-#  replace 10.0.0.5 with your server's VPN/LAN IP   (local only: http://localhost/mcp;
-#  public/HTTPS: https://docs-mcp.company.internal/mcp)
-```
-
-…or hand-edit `~/.codex/config.toml` (see `clients/codex-config.example.toml`):
-
-```toml
-[mcp_servers.docs]
-url = "http://10.0.0.5/mcp"              # your server's VPN/LAN IP (local: http://localhost/mcp;
-                                         #   public/HTTPS: https://docs-mcp.company.internal/mcp)
-bearer_token_env_var = "DOCS_MCP_TOKEN"  # the NAME of an env var — not the token itself
-startup_timeout_sec = 20
-```
-
-**3. User: export the token and run Codex** (the var must exist in the shell that starts `codex` —
-HTTP MCP servers get no env injection):
+**2. User: export the token in the shell that starts Codex:**
 
 ```bash
 export DOCS_MCP_TOKEN=tok_alice_xxxx
+```
+
+**3. User: register the MCP server** with the native HTTP client:
+
+```bash
+codex mcp add docs --url http://10.0.0.5/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+```
+
+Replace the URL with `http://localhost/mcp` for a same-machine setup or
+`https://docs-mcp.company.internal/mcp` for production.
+
+You can also hand-edit `~/.codex/config.toml` (see `clients/codex-config.example.toml`):
+
+```toml
+[mcp_servers.docs]
+url = "http://10.0.0.5/mcp"
+bearer_token_env_var = "DOCS_MCP_TOKEN"
+startup_timeout_sec = 20
+```
+
+**4. User: start Codex and verify the connection:**
+
+```bash
 codex
 ```
 
-**4. Verify** — inside Codex run `/mcp`; you should see `docs` connected with `list_docs`,
-`read_doc`, `search_docs`, `semantic_search`. Manage with `codex mcp list`, `codex mcp get docs`,
-`codex mcp remove docs`.
+Inside Codex, run `/mcp`. The `docs` server should show these tools:
+`list_docs`, `search_docs`, `read_doc`, and `semantic_search`.
+
+Useful management commands:
+
+```bash
+codex mcp list
+codex mcp get docs
+codex mcp remove docs
+```
 
 **5. (Optional) Install the doc skills** — the repo ships Codex
 [Agent Skills](https://developers.openai.com/codex/skills) under `clients/skills/`:
@@ -256,9 +283,14 @@ discovered, confirm it is under `.agents/skills` (repo-scoped) or `~/.agents/ski
 then restart Codex and check the [skills docs](https://developers.openai.com/codex/skills).
 
 **Troubleshooting**
-- Connected but **`Tools: (none)`** / won't initialize → older Codex build: add
-  `experimental_use_rmcp_client = true` at the top of `config.toml`, or upgrade (`codex --version`).
-- Still failing → use the `mcp-remote` stdio bridge (works on any Codex version):
+- **401 Unauthorized** → verify `DOCS_MCP_TOKEN` is exported in the shell that starts Codex and that
+  the server was restarted after the token was minted or revoked.
+- **403 Forbidden origin** → browser-style clients must use an `Origin` listed in `ALLOWED_ORIGINS`.
+  Codex CLI normally sends no `Origin` header.
+- **400/4xx host errors** → add the exact hostname/IP in the MCP URL to `ALLOWED_HOSTS`, then restart
+  `docs-mcp`.
+- **Connected but tools do not appear** → run `codex --version` and upgrade Codex. If native HTTP MCP
+  still misbehaves, use the `mcp-remote` stdio bridge:
   ```toml
   [mcp_servers.docs]
   command = "npx"
@@ -266,16 +298,20 @@ then restart Codex and check the [skills docs](https://developers.openai.com/cod
           "--header", "Authorization: Bearer ${DOCS_MCP_TOKEN}"]
   env_vars = ["DOCS_MCP_TOKEN"]  # forward from the shell; do not paste the token here
   ```
-  use your server's VPN/LAN IP; `--allow-http` is required for plain `http://` (drop it for an `https://` URL).
-- **4xx on connect** → ensure the server's `ALLOWED_HOSTS` includes the hostname the client uses
-  (`localhost` is allowed by default) and that your reverse proxy forwards the `Authorization`
-  header (Caddy does by default).
+  Use your server's VPN/LAN IP; `--allow-http` is required for plain `http://` and should be removed
+  for an `https://` URL.
 
 ## Configuration
 
-Env-driven (see `.env.example`): `DOC_ROOT`, `SOURCE_DIRS`, `BIND_HOST`/`BIND_PORT`, `TOKENS_FILE`,
+Server (see `.env.example`): `DOC_ROOT`, `SOURCE_DIRS`, `BIND_HOST`/`BIND_PORT`, `TOKENS_FILE`,
 `SEARCH_BACKEND` (`ripgrep`|`fts5`), `FTS5_DB`, `ENABLE_VECTOR`, `QDRANT_URL`, `OPENAI_API_KEY`,
-`OPENAI_EMBED_MODEL`, `EMBED_CHUNK_TOKENS`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`.
+`OPENAI_EMBED_MODEL`, `EMBED_CHUNK_TOKENS`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`, `TOKEN_TTL`.
+
+Network exposure (consumed by `docmcp.sh` / Caddy — see the [profiles above](#deploy-to-a-linux-server-x86_64)):
+`HTTP_BIND` (host interface the plaintext `:80` listener binds to), `DOMAIN` (a hostname switches
+Caddy to automatic HTTPS), and `ALLOW_PLAINTEXT_HTTP` (conscious opt-in to publish plaintext off
+loopback on a trusted/VPN network). Resource bounds (DoS guards): `MAX_SEARCH_LIMIT`,
+`MAX_READ_BYTES`, `MAX_READ_LINES`.
 
 ## Testing
 
@@ -292,8 +328,15 @@ Vector tests auto-skip unless a Qdrant is reachable on `localhost:6333`
 
 Path traversal is contained in `docstore.py` (resolve-and-contain; the only filesystem resolver).
 Every tool intersects paths with the caller's `allowed_prefixes`. The HTTP transport validates the
-`Origin` header (DNS-rebinding) and an optional `ALLOWED_HOSTS` allowlist; bind localhost and expose
-only via the TLS reverse proxy. Add per-token rate limiting at the proxy (see `docker/Caddyfile`).
+`Origin` header (DNS-rebinding) and an optional `ALLOWED_HOSTS` allowlist. The server itself only
+speaks plain HTTP and is never published directly — it is reached through Caddy, and you match the
+[network profile](#deploy-to-a-linux-server-x86_64) to your trust boundary: plain HTTP by raw IP on a
+trusted/VPN network (the default, gated by the explicit `ALLOW_PLAINTEXT_HTTP` opt-in so cleartext is
+never accidental), or automatic HTTPS via `DOMAIN` for an untrusted/public one — bearer tokens must
+never travel plaintext on a network you don't trust. Tokens are constant-time compared, never logged,
+and honor an optional `expires_at`. `read_doc`/`search_docs` are bounded (`MAX_READ_*`,
+`MAX_SEARCH_LIMIT`) so an authenticated caller can't exhaust resources. Add per-token rate limiting at
+the proxy (see `docker/Caddyfile`).
 
 See `CLAUDE.md` for architecture orientation.
 

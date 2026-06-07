@@ -42,7 +42,13 @@ services:
       # Caddy's automatic HTTPS for that hostname.
       DOMAIN: ${DOMAIN:-:80}
     ports:
-      - "80:80"
+      # SECURITY: the plaintext HTTP listener is bound to LOOPBACK by default, so an
+      # unconfigured deployment never exposes bearer tokens in cleartext to the
+      # network. For real network/production use set DOMAIN=<host> (Caddy then serves
+      # HTTPS on 443) and HTTP_BIND=0.0.0.0 (so :80 serves the HTTP->HTTPS redirect,
+      # and ACME HTTP-01 if TLS-ALPN-01 on :443 isn't usable). HTTPS on 443 is
+      # encrypted, so it binds all interfaces.
+      - "${HTTP_BIND:-127.0.0.1}:80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

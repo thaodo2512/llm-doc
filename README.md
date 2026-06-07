@@ -47,8 +47,10 @@ even for non-developers:
 
 `setup` builds the slim **server** image right away; the heavier **ingest** image (Docling +
 tree-sitter) is built the first time you run `./docmcp.sh ingest`. The server is reachable at
-**`http://localhost/mcp`** through Caddy (the only published port); set `DOMAIN=docs.company.internal`
-in `.env` for automatic HTTPS. Run `./docmcp.sh help` for the full command list.
+**`http://localhost/mcp`** through Caddy — by default that HTTP port is published on **loopback only**,
+so a default run is never reachable (or sniffable) from the network. For network/production use set
+**`DOMAIN=docs.company.internal`** *and* **`HTTP_BIND=0.0.0.0`** in `.env`: Caddy then serves automatic
+HTTPS on 443 and `:80` redirects to it. Run `./docmcp.sh help` for the full command list.
 
 ## Document corpus (`raw/`, version-controlled via Git LFS)
 
@@ -94,8 +96,11 @@ Clone the repo on the target host and run the same helper — Docker is the only
 Two images come from one `docker/Dockerfile`: a slim **`server`** (FastMCP + ripgrep — the only
 thing exposed, via Caddy) and a heavier **`ingest`** (Docling + tree-sitter [+ vector], run on
 demand, never exposed). The curated store + index live in a named volume shared between them, so
-`docs-mcp` binds `0.0.0.0:8080` **inside** the container but is **not published** — only Caddy
-(80/443) is reachable. Set `DOMAIN=docs-mcp.company.internal` in `.env` for automatic HTTPS.
+`docs-mcp` binds `0.0.0.0:8080` **inside** the container but is **not published** — only Caddy is
+reachable, and its plaintext `:80` is bound to **loopback by default**. For real network exposure set
+both `DOMAIN=docs-mcp.company.internal` (automatic HTTPS on 443) **and** `HTTP_BIND=0.0.0.0` (so `:80`
+serves the HTTP→HTTPS redirect / ACME HTTP-01) in `.env` — bearer tokens must never travel over plaintext.
+`./docmcp.sh serve` refuses to publish plaintext on the network if you set `HTTP_BIND` without a `DOMAIN`.
 
 Building on an arm64 box (e.g. Apple Silicon) for an amd64 target? Build the images explicitly:
 

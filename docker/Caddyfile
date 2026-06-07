@@ -1,8 +1,13 @@
 # Reverse proxy: the only exposed entry point. Terminates TLS and forwards to
 # the (unpublished) docs-mcp service over the internal compose network.
 #
-# - DOMAIN=:80 (default)        -> plain HTTP on :80 (fine for a VPN-internal demo).
+# - DOMAIN=:80 (default)        -> plain HTTP on :80, but the host publishes that
+#                                  port on LOOPBACK only (see docker-compose.yml),
+#                                  so tokens are never sent in cleartext over the
+#                                  network. Use this only for local/dev access.
 # - DOMAIN=docs.company.internal -> Caddy obtains/serves automatic HTTPS for it.
+#                                  REQUIRED for any network/production exposure so
+#                                  bearer tokens travel over TLS, not plaintext.
 {$DOMAIN} {
 	encode gzip
 

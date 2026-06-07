@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation Report</title>
+<!--
+  DESIGN TEMPLATE for the `doc-html-report` skill.
+  Aesthetic: "solution brief" style — dark textured hero, crimson accent, red
+  section headings, gray document bars with a red left-tab, gray-header tables.
+  Copy the <style> block verbatim. Replace:
+    - the brand bar (.logo company name — drop in your own logo if you have one)
+    - the hero title / kicker / sub
+    - the <nav class="toc"> list   (one <li> per document)
+    - the <section class="doc"> blocks (one per document; FULL content in .doc-body)
+    - the footer company / year
+  Keep it self-contained: inline CSS only, no external assets or CDNs.
+  Theme it by editing the :root variables (accent + hero colors).
+-->
+<style>
+  :root{
+    --bg:#ffffff; --bg-soft:#eef0f3; --surface:#ffffff;
+    --text:#16191d; --muted:#6b7280; --border:#d7dbe0;
+    --accent:#c8102e; --accent-dark:#8a0b20; --code-bg:#f6f7f9;
+    --hero-from:#3a0a12; --hero-mid:#23070d; --hero-to:#120406;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:920px; margin:0 auto; padding:1.25rem 1.25rem 4rem}
+
+  /* --- brand bar: your logo left, label right --- */
+  .brandbar{display:flex; justify-content:space-between; align-items:center; padding:.5rem 0 1.1rem}
+  .brandbar .logo{font-weight:800; font-size:1.15rem; letter-spacing:-.02em; display:flex; align-items:center; gap:.5rem}
+  .brandbar .logo .mark{display:inline-block; width:14px; height:14px; background:var(--accent);
+    transform:rotate(45deg); border-radius:2px}
+  .brandbar .partner{color:var(--muted); font-weight:700; font-size:.78rem; letter-spacing:.14em; text-transform:uppercase}
+
+  /* --- hero banner --- */
+  header.hero{
+    position:relative; overflow:hidden; border-radius:8px; color:#fff;
+    padding:1.9rem 2rem; background:linear-gradient(115deg,var(--hero-from),var(--hero-mid) 55%,var(--hero-to));
+  }
+  header.hero::after{ /* subtle "circuit" texture, no external image */
+    content:""; position:absolute; inset:0; opacity:.18; pointer-events:none;
+    background:
+      radial-gradient(circle at 12% 40%, rgba(232,80,110,.5) 0 2px, transparent 3px),
+      radial-gradient(circle at 78% 22%, rgba(232,80,110,.4) 0 2px, transparent 3px),
+      radial-gradient(circle at 64% 75%, rgba(232,80,110,.4) 0 2px, transparent 3px),
+      repeating-linear-gradient(90deg, transparent 0 46px, rgba(232,80,110,.22) 46px 47px),
+      repeating-linear-gradient(0deg, transparent 0 46px, rgba(232,80,110,.14) 46px 47px);
+  }
+  header.hero > *{position:relative; z-index:1}
+  .hero .kicker{font-size:.72rem; letter-spacing:.2em; text-transform:uppercase; font-weight:800; color:#f6a6b2}
+  .hero h1{margin:.5rem 0 .35rem; font-size:2.05rem; font-weight:800; letter-spacing:-.025em; line-height:1.15}
+  .hero .sub{color:#e9ebee; font-size:.98rem}
+  .hero .sub b{color:#fff}
+
+  /* --- table of contents --- */
+  nav.toc{margin:2rem 0}
+  nav.toc h2{margin:0 0 .7rem; font-size:.78rem; text-transform:uppercase; letter-spacing:.1em;
+    color:var(--accent); font-weight:800}
+  nav.toc ol{margin:0; padding-left:1.3rem; columns:2; column-gap:2.2rem}
+  nav.toc li{margin:.32rem 0; break-inside:avoid}
+  nav.toc a{color:var(--text); text-decoration:none}
+  nav.toc a:hover{color:var(--accent); text-decoration:underline}
+
+  .badge{display:inline-block; font-size:.66rem; font-weight:800; text-transform:uppercase;
+    letter-spacing:.05em; color:var(--accent); background:#fff; border:1px solid var(--accent);
+    border-radius:3px; padding:.04rem .42rem; vertical-align:middle}
+
+  /* --- document sections: gray bar + red left-tab --- */
+  section.doc{margin:0 0 1rem; border:1px solid var(--border); border-radius:6px; overflow:hidden;
+    background:var(--surface); scroll-margin-top:1rem}
+  section.doc > details > summary{
+    list-style:none; cursor:pointer; user-select:none;
+    display:flex; align-items:center; gap:.65rem; flex-wrap:wrap;
+    padding:.85rem 1.2rem; background:var(--bg-soft); border-left:5px solid var(--accent);
+  }
+  section.doc > details > summary:hover{background:#e6e9ee}
+  section.doc > details > summary::-webkit-details-marker{display:none}
+  .doc-title{font-weight:750; font-size:1.05rem; letter-spacing:-.01em}
+  .doc-path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:.78rem; color:var(--muted); margin-left:auto}
+
+  .doc-body{padding:.5rem 1.4rem 1.35rem}
+  .doc-body > :first-child{margin-top:.6rem}
+  .doc-body h1,.doc-body h2,.doc-body h3,.doc-body h4{line-height:1.3; letter-spacing:-.01em; color:var(--accent-dark)}
+  .doc-body h1{font-size:1.32rem} .doc-body h2{font-size:1.16rem}
+  .doc-body h3{font-size:1.03rem} .doc-body h4{font-size:.95rem}
+  .doc-body p{margin:.7rem 0}
+  .doc-body a{color:var(--accent)}
+  .doc-body pre{background:var(--code-bg); border:1px solid var(--border); border-left:3px solid var(--accent);
+    border-radius:6px; padding:.85rem 1.05rem; overflow-x:auto; font-size:.84rem; line-height:1.55}
+  .doc-body code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:var(--code-bg); border:1px solid var(--border); padding:.06rem .34rem; border-radius:4px; font-size:.86em}
+  .doc-body pre code{background:none; border:none; padding:0; font-size:1em}
+  .doc-body blockquote{margin:.8rem 0; padding:.3rem 1rem; border-left:4px solid var(--accent);
+    background:#fff5f6; color:#5b1521}
+  .doc-body table{border-collapse:collapse; width:100%; font-size:.9rem; margin:.8rem 0}
+  .doc-body th,.doc-body td{border:1px solid var(--border); padding:.45rem .65rem; text-align:left}
+  .doc-body th{background:var(--bg-soft); font-weight:750}
+  .doc-body img{max-width:100%}
+  .truncated{color:var(--muted); font-size:.82rem; font-style:italic; margin-top:.6rem}
+
+  footer.report{margin-top:2rem; padding-top:1rem; border-top:1px solid var(--border);
+    color:var(--muted); font-size:.78rem; display:flex; justify-content:space-between}
+
+  a.top{position:fixed; right:1.1rem; bottom:1.1rem; background:var(--accent); color:#fff;
+    text-decoration:none; border-radius:999px; padding:.5rem .85rem; font-size:.82rem;
+    box-shadow:0 4px 12px rgba(200,16,46,.35)}
+
+  @media (max-width:640px){nav.toc ol{columns:1} .doc-path{margin-left:0; width:100%}}
+  @media print{
+    body{background:#fff} a.top{display:none}
+    header.hero{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+    section.doc{break-inside:avoid; box-shadow:none}
+    details > summary{pointer-events:none}
+    details:not([open]) > div{display:block}
+  }
+</style>
+</head>
+<body>
+<div class="page" id="top">
+
+  <div class="brandbar">
+    <div class="logo"><span class="mark"></span> YOUR&nbsp;COMPANY</div>
+    <div class="partner">Documentation</div>
+  </div>
+
+  <header class="hero">
+    <div class="kicker">Documentation Report</div>
+    <h1>Internal Documentation</h1>
+    <div class="sub">Generated <b>2026-06-07</b> &middot; <b>3</b> documents &middot; scope <b>/</b></div>
+  </header>
+
+  <nav class="toc">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#doc-1">Getting Started</a> <span class="badge">markdown</span></li>
+      <li><a href="#doc-2">Flash Protocol</a> <span class="badge">markdown</span></li>
+      <li><a href="#doc-3">build.sh</a> <span class="badge">code</span></li>
+    </ol>
+  </nav>
+
+  <!-- ============ one <section class="doc"> per document ============ -->
+
+  <section class="doc" id="doc-1">
+    <details open>
+      <summary>
+        <span class="doc-title">Getting Started</span>
+        <span class="badge">markdown</span>
+        <span class="doc-path">/public/getting-started.md</span>
+      </summary>
+      <div class="doc-body">
+        <!-- the document's FULL content, Markdown rendered to HTML -->
+        <h2>Getting Started</h2>
+        <p>This guide gets a new machine onto the internal docs server. You need
+           <code>docker</code> and a bearer token from your team lead.</p>
+        <ol>
+          <li>Clone the repo and run <code>./docmcp.sh setup</code>.</li>
+          <li>Export your token: <code>export DOCS_MCP_TOKEN=tok_…</code></li>
+          <li>Point your client at <code>http://localhost/mcp</code>.</li>
+        </ol>
+        <table>
+          <tr><th>Variable</th><th>Purpose</th></tr>
+          <tr><td><code>DOC_ROOT</code></td><td>curated doc store</td></tr>
+          <tr><td><code>ALLOWED_HOSTS</code></td><td>accepted Host headers</td></tr>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="doc" id="doc-2">
+    <details open>
+      <summary>
+        <span class="doc-title">Flash Protocol</span>
+        <span class="badge">markdown</span>
+        <span class="doc-path">/team-fw/flash-protocol.md</span>
+      </summary>
+      <div class="doc-body">
+        <h2>Flash Protocol</h2>
+        <p>The bootloader speaks a small framed protocol over UART at 115200 baud.
+           Each frame is acknowledged before the next is sent.</p>
+        <blockquote>Always erase the sector before a write, or the CRC check fails.</blockquote>
+        <pre><code>0xAA | LEN(2) | CMD | PAYLOAD | CRC16
+ACK  = 0x79
+NACK = 0x1F</code></pre>
+      </div>
+    </details>
+  </section>
+
+  <section class="doc" id="doc-3">
+    <details>
+      <summary>
+        <span class="doc-title">build.sh</span>
+        <span class="badge">code</span>
+        <span class="doc-path">/team-fw/scripts/build.sh</span>
+      </summary>
+      <div class="doc-body">
+        <!-- long / code docs may start collapsed (no `open` on <details>) -->
+        <pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET="${1:-release}"
+echo "building $TARGET …"
+cmake -B build -DCMAKE_BUILD_TYPE="$TARGET"
+cmake --build build -j"$(nproc)"</code></pre>
+        <p class="truncated">… full file content continues here (this skill copies the entire document).</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ============ end repeated sections ============ -->
+
+  <footer class="report">
+    <span>&copy; 2026 Your Company &middot; Internal documentation</span>
+    <span>Confidential</span>
+  </footer>
+
+</div>
+<a class="top" href="#top">&uarr; Top</a>
+</body>
+</html>

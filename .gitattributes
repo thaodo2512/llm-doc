@@ -7,6 +7,10 @@
 
 raw/** filter=lfs diff=lfs merge=lfs -text
 
+# Vendored Docling models (binary weights) — stored in Git LFS so a clone pulls
+# them with the repo and the build needs no model downloads.
+models/** filter=lfs diff=lfs merge=lfs -text
+
 # --- exceptions: keep these as normal, diffable git ---
 raw/.gitkeep        !filter !diff !merge text
 

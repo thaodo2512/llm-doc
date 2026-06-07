@@ -134,7 +134,7 @@ cmd_ingest() {
     wait_for_qdrant
   fi
   info "Ingesting raw/ → curated store"
-  warn "the first ingest builds the ingestion image (Docling/torch) — large download, may take several minutes"
+  warn "the first ingest builds the ingestion image (installs Docling/torch wheels) — several minutes; the models are vendored in the repo, so none are downloaded"
   dc "${profiles[@]}" run --rm ingest "$@"
   if is_running docs-mcp; then
     dc restart docs-mcp >/dev/null && info "reloaded the running server (new docs are live)"

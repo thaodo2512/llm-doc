@@ -63,12 +63,13 @@ services:
       SOURCE_DIRS: /srv/raw
       DOC_ROOT: /srv/docs/curated
       FTS5_DB: /srv/docs/index.sqlite
-      DOCLING_ARTIFACTS_PATH: /opt/docling/models
+      # DOCLING_ARTIFACTS_PATH is baked into the ingest image — the vendored models
+      # are COPY'd to /opt/docling/models at build time. Deliberately NOT mounting a
+      # volume there: a named-volume mount would shadow the in-image vendored models.
       QDRANT_URL: http://qdrant:6333
     volumes:
       - ../raw:/srv/raw:ro          # mount your raw sources here
       - docstore:/srv/docs          # writes curated/ + index + index.sqlite
-      - docling_models:/opt/docling/models
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -83,5 +84,4 @@ volumes:
   docstore:
   caddy_data:
   caddy_config:
-  docling_models:
   qdrant_data:

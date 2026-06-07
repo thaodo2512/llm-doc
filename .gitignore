@@ -21,9 +21,8 @@ venv/
 *.sqlite3
 *.sqlite-*
 
-# Docling / HuggingFace model caches
+# HuggingFace model cache (the vendored models live in /models/, tracked via LFS)
 .cache/
-/models/
 
 # Tooling
 .pytest_cache/

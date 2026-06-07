@@ -135,12 +135,16 @@ docker compose up -d docs-mcp caddy
 When `ENABLE_VECTOR=false` (default) `semantic_search` returns a clear disabled error and neither
 Qdrant nor OpenAI is contacted.
 
-### Air-gapped hosts
+### Models (vendored — no download needed)
 
-The `ingest` image prefetches Docling's layout/table models at build time
-(`DOCLING_ARTIFACTS_PATH=/opt/docling/models`), so the host needs no internet. Set
-`HF_HUB_OFFLINE=1` to forbid any Hugging Face calls. (To slim the amd64 image, install the CPU-only
-torch wheel first — see the comment in `docker/Dockerfile`.)
+The Docling models (~600 MB: layout, table, and OCR) are **vendored in the repo**
+under `models/` via Git LFS and copied into the `ingest` image at build time. So the
+build needs **no model downloads** — a clone pulls the models with the repo, and
+`HF_HUB_OFFLINE=1` keeps both build and runtime fully offline for models.
+
+> The first `git clone` pulls ~600 MB of LFS objects — clone once and keep it. The
+> image installs **CPU-only torch** (no proprietary NVIDIA CUDA wheels — smaller,
+> fully OSS).
 
 ## Issuing tokens
 

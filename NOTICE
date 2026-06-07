@@ -5,3 +5,21 @@ This product is licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text, or obtain a copy at
 
     http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+Third-party model weights vendored under models/
+
+This repository redistributes pre-trained model weights from the following
+upstream projects, under their respective licenses. The weights are unmodified
+and are included (via Git LFS) so the ingestion image can build and run without
+downloading them.
+
+  * Docling layout model — docling-project/docling-layout-heron
+    License: Apache-2.0
+
+  * Docling TableFormer models — docling-project/docling-models
+    License: CDLA-Permissive-2.0
+
+  * RapidOCR PP-OCRv4 OCR models (text detection / classification / recognition,
+    ONNX) — from the RapidAI/RapidOCR project (PaddleOCR PP-OCRv4 weights)
+    License: Apache-2.0

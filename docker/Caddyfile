@@ -21,5 +21,12 @@
 	#     window 1m
 	# }
 
-	reverse_proxy docs-mcp:8080
+	# Optional upload/manage portal (only running when PORTAL_ENABLED): /portal* goes to
+	# the separate `portal` service; everything else (/mcp) to the read-only docs-mcp.
+	handle /portal* {
+		reverse_proxy portal:8080
+	}
+	handle {
+		reverse_proxy docs-mcp:8080
+	}
 }

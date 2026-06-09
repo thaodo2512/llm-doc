@@ -110,6 +110,11 @@ cmd_setup() {
   info "Preparing configuration"
   [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; info "created .env (mode 600). Default profile = internal network over VPN (plain HTTP by raw IP): set your server's IP in ALLOWED_HOSTS. See .env.example for the HTTPS or local-only profiles."; }
   mkdir -p "$ROOT/raw"; [ -e "$ROOT/raw/.gitkeep" ] || : > "$ROOT/raw/.gitkeep"
+  [ -f "$ROOT/groups.json" ] || ( umask 077; printf '{}\n' > "$ROOT/groups.json" )  # RBAC groups (bind-mounted)
+  # A session secret for the optional portal (only used when PORTAL_ENABLED=true).
+  grep -qE '^SESSION_SECRET=.+' "$ROOT/.env" 2>/dev/null \
+    || printf '\n# Portal session-cookie HMAC key (auto-generated).\nSESSION_SECRET=%s\n' \
+         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)" >> "$ROOT/.env"
   load_env
 
   info "Building the server image (one-time; usually 1–3 minutes)…"
@@ -120,7 +125,7 @@ cmd_setup() {
     local tok
     # Admin is the break-glass token: full access, non-expiring. Mint scoped,
     # expiring tokens for everyone else.
-    tok="$(cmd_token admin / --expires never)" || die "failed to create the admin token (see the Docker error above)"
+    tok="$(cmd_token admin --all --expires never)" || die "failed to create the admin token (see the Docker error above)"
     [ -n "$tok" ] || die "admin-token creation produced no token — check that 'docker run' works"
     info "created tokens.json (mode 600) with an 'admin' token — full access, non-expiring:"
     printf "    %s%s%s\n" "$C_B" "$tok" "$C_0"
@@ -171,6 +176,9 @@ cmd_ingest() {
 cmd_serve() {
   need_docker; load_env
   server_image_exists || die "build the image first: ./docmcp.sh setup"
+  # Ensure groups.json exists so its read-only bind mount maps a FILE (a missing
+  # bind source would be created as a directory). Harmless for upgrades.
+  [ -f "$ROOT/groups.json" ] || ( umask 077; printf '{}\n' > "$ROOT/groups.json" )
   # DOMAIN=:<port> (anything but :80) is unsupported: Caddy would listen on that
   # container port, but compose only publishes HTTP_PORT->80 / HTTPS_PORT->443, so
   # the endpoint would be unreachable while the helper advertised it as live. To
@@ -201,6 +209,31 @@ cmd_serve() {
   is_true "${ENABLE_VECTOR:-false}" && dc --profile vector up -d qdrant
   info "Starting the server + reverse proxy…"
   dc up -d docs-mcp caddy
+  if is_true "${PORTAL_ENABLED:-false}"; then
+    [ -n "${SESSION_SECRET:-}" ] \
+      || die "PORTAL_ENABLED=true but SESSION_SECRET is empty — set it in .env (./docmcp.sh setup generates one)"
+    # Session cookies must be protected. Start the portal when EITHER a real TLS
+    # hostname is configured (Caddy terminates HTTPS and the portal sets Secure
+    # cookies) OR the operator opted into plaintext on a trusted/VPN network. The die
+    # message used to promise the DOMAIN path but the code only honored the flag.
+    local portal_tls=""
+    case "${DOMAIN:-}" in ""|:*) portal_tls="" ;; *) portal_tls=1 ;; esac
+    if [ -n "$portal_tls" ]; then
+      # A TLS DOMAIN must keep Secure cookies on. Refuse the contradictory combo rather
+      # than silently weaken it (the portal sets secure = NOT allow_plaintext_portal).
+      if is_true "${ALLOW_PLAINTEXT_PORTAL:-false}"; then
+        die "DOMAIN=${DOMAIN} serves HTTPS, but ALLOW_PLAINTEXT_PORTAL=true would disable the Secure flag on portal session cookies — unset ALLOW_PLAINTEXT_PORTAL so cookies stay Secure over TLS."
+      fi
+    elif is_true "${ALLOW_PLAINTEXT_PORTAL:-false}"; then
+      :  # conscious plaintext opt-in for a trusted/VPN network (cookies not encrypted)
+    else
+      die "PORTAL_ENABLED=true needs a TLS DOMAIN=<host> (HTTPS) OR ALLOW_PLAINTEXT_PORTAL=true (trusted/VPN) — refusing to serve session cookies unprotected by default"
+    fi
+    dc --profile portal up -d portal
+    info "Upload portal is live at: ${C_B}$(public_url | sed 's,/mcp$,/portal,')${C_0}"
+    [ -n "$portal_tls" ] \
+      || warn "the portal is a WRITE surface with browser session cookies over plain HTTP — keep it on a trusted/VPN network only."
+  fi
   info "Server is live at: ${C_B}$(public_url)${C_0}"
   local portsfx=""; case "${HTTP_PORT:-80}" in 80|"") ;; *) portsfx=":${HTTP_PORT}";; esac
   case "${DOMAIN:-:80}" in
@@ -217,7 +250,7 @@ cmd_serve() {
 cmd_stop() {
   need_docker
   info "Stopping all services (your ingested store is preserved)"
-  dc --profile ingest --profile vector down
+  dc --profile ingest --profile vector --profile portal down
 }
 
 # logs  — follow the server + proxy logs.
@@ -234,9 +267,11 @@ cmd_build() {
   esac
 }
 
-# token <user> [<prefix> ...] [--expires <Nd|Nh|Nm|never>]  — mint a scoped bearer
-# token. Default prefix: /. Default expiry: 90 days (override TOKEN_TTL or pass
-# --expires; use 'never' for a non-expiring token).
+# token <user> <prefix> [<prefix> ...] [--expires <Nd|Nh|Nm|never>] [--comment <text>]
+#   — mint a scoped bearer token. A scope is REQUIRED: pass explicit prefixes, or
+# --all for the whole corpus (admin/break-glass) — it never silently defaults to "/".
+# Default expiry: 90 days (override TOKEN_TTL or pass --expires; 'never' = non-expiring).
+# The record stores created_at/created_by and an optional --comment (shown by token-list).
 cmd_token() {
   [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token <user> [<allowed-prefix> ...] [--expires <Nd|Nh|Nm|never>]"
   need_docker
@@ -244,17 +279,41 @@ cmd_token() {
   [ -f "$ROOT/tokens.json" ] || { ( umask 077; printf '{}\n' > "$ROOT/tokens.json" ); }
   [ -w "$ROOT/tokens.json" ] || die "tokens.json is not writable: $ROOT/tokens.json"
 
-  # Pull a --expires flag out of the args; whatever remains is user + prefixes.
-  local expires_spec="${TOKEN_TTL:-90d}" rest=()
+  # Pull --expires / --comment / --group / --all out of the args; the rest is user + prefixes.
+  local expires_spec="${TOKEN_TTL:-90d}" comment="" grant_all="" groups_csv="" writes_csv="" rest=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --expires)   expires_spec="${2:-}"; shift 2 || die "--expires needs a value" ;;
-      --expires=*) expires_spec="${1#--expires=}"; shift ;;
-      *)           rest+=("$1"); shift ;;
+      --expires)     expires_spec="${2:-}"; shift 2 || die "--expires needs a value" ;;
+      --expires=*)   expires_spec="${1#--expires=}"; shift ;;
+      --comment)     comment="${2:-}"; shift 2 || die "--comment needs a value" ;;
+      --comment=*)   comment="${1#--comment=}"; shift ;;
+      --group)       groups_csv="${groups_csv}${2:-}," ; shift 2 || die "--group needs a name" ;;
+      --group=*)     groups_csv="${groups_csv}${1#--group=}," ; shift ;;
+      --write)       writes_csv="${writes_csv}${2:-}," ; shift 2 || die "--write needs a prefix" ;;
+      --write=*)     writes_csv="${writes_csv}${1#--write=}," ; shift ;;
+      --all|--admin) grant_all=1; shift ;;
+      *)             rest+=("$1"); shift ;;
     esac
   done
   set -- "${rest[@]}"
-  local user="${1:-}"; [ -n "$user" ] && shift || die "usage: ./docmcp.sh token <user> [<prefix> ...] [--expires <Nd|Nh|Nm|never>]"
+  local user="${1:-}"; [ -n "$user" ] && shift \
+    || die "usage: ./docmcp.sh token <user> <prefix...> [--group <name>] [--expires …] [--comment …] | --all"
+  # Require an EXPLICIT scope: prefixes, --group, or --all. NEVER silently default to
+  # "/" (a full-access footgun); reject empty and bare-"/" prefixes.
+  if [ -n "$grant_all" ]; then
+    { [ "$#" -eq 0 ] && [ -z "$groups_csv" ]; } || die "use --all alone (not with prefixes/--group)"
+    set -- "/"
+  else
+    { [ "$#" -ge 1 ] || [ -n "$groups_csv" ] || [ -n "$writes_csv" ]; } \
+      || die "specify a read prefix (e.g. /public), --group, --write, or --all — a scope is required"
+    local _p
+    for _p in "$@"; do
+      [ -n "$(printf '%s' "$_p" | tr -d '[:space:]')" ] \
+        || die "empty prefix not allowed — pass a real path like /public (or --all)"
+      [ -n "$(printf '%s' "$_p" | tr -d '/[:space:]')" ] \
+        || die "a bare '/' grants the WHOLE corpus — use --all to do that explicitly"
+    done
+  fi
 
   # Translate the spec into a TTL in seconds (empty string => non-expiring).
   # Validate the numeric body BEFORE the arithmetic so a malformed spec can't crash
@@ -274,27 +333,68 @@ cmd_token() {
   fi
 
   local tok
-  # Run as the host user so the bind-mounted tokens.json stays host-owned (Linux),
-  # and write via a context manager so the file is always flushed/closed cleanly.
-  tok="$(docker run --rm -i --user "$(id -u):$(id -g)" \
-    -v "$ROOT/tokens.json:/work/tokens.json" "$SERVER_IMAGE" \
+  # Run as the host user so the bind-mounted tokens.json stays host-owned (Linux).
+  # The write is ATOMIC (temp + os.replace) so the live-reloading server (which
+  # watches tokens.json's mtime) never reads a half-written file. TOKEN_BY records
+  # who minted it (provenance) without putting it in argv.
+  tok="$(TOKEN_BY="$(id -un 2>/dev/null || echo "${USER:-operator}")" TOKEN_COMMENT="$comment" TOKEN_GROUPS="$groups_csv" TOKEN_WRITE="$writes_csv" \
+    docker run --rm -i --user "$(id -u):$(id -g)" -e TOKEN_BY -e TOKEN_COMMENT -e TOKEN_GROUPS -e TOKEN_WRITE \
+    -v "$ROOT:/work" "$SERVER_IMAGE" \
     python - /work/tokens.json "$user" "$ttl" "$@" <<'PY'
-import json, os, secrets, sys, time
+import fcntl, json, os, secrets, sys, tempfile, time
 path, user, ttl = sys.argv[1], sys.argv[2], sys.argv[3]
-prefixes = sys.argv[4:] or ["/"]
+prefixes = sys.argv[4:]
+groups = [g for g in (os.environ.get("TOKEN_GROUPS") or "").split(",") if g]
+writes = [w.strip() for w in (os.environ.get("TOKEN_WRITE") or "").split(",") if w.strip()]
+if not prefixes and not groups and not writes:  # shell guarantees a scope; refuse if empty
+    sys.stderr.write("internal error: no scope given\n"); sys.exit(2)
+d = os.path.dirname(path) or "."
+# Serialize concurrent token writers (mint/revoke) so a read-modify-write cannot lose
+# updates. flock a sibling lock file (NOT the file we os.replace); released on exit.
+_lock = open(os.path.join(d, ".tokens.lock"), "a")
+fcntl.flock(_lock, fcntl.LOCK_EX)
 with open(path) as fh:
     data = json.load(fh) if os.path.getsize(path) > 0 else {}
-rec = {"user": user, "allowed_prefixes": prefixes}
+rec = {
+    "user": user,
+    "created_at": int(time.time()),
+    "created_by": os.environ.get("TOKEN_BY") or "operator",
+}
+if prefixes:
+    rec["allowed_prefixes"] = prefixes
+if groups:
+    rec["groups"] = groups
+if writes:
+    rec["writable_prefixes"] = writes
+_comment = (os.environ.get("TOKEN_COMMENT") or "").strip()
+if _comment:
+    rec["comment"] = _comment
 if ttl:
     rec["expires_at"] = int(time.time()) + int(ttl)
 tok = "tok_%s_%s" % (user, secrets.token_hex(12))
 data[tok] = rec
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2)
+# Atomic publish: write a temp file in the same dir (0600) then os.replace.
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".tokens.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.flush(); os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp); raise
+# Append-only audit (never the token string).
+try:
+    adir = os.path.join(d, "var"); os.makedirs(adir, exist_ok=True)
+    with open(os.path.join(adir, "token-audit.jsonl"), "a") as af:
+        af.write(json.dumps({"ts": int(time.time()), "action": "create", "user": user,
+                             "by": rec["created_by"], "prefixes": prefixes, "groups": groups,
+                             "writable": writes}) + "\n")
+except OSError:
+    pass
 print(tok)
 PY
 )"
-  chmod 600 "$ROOT/tokens.json" 2>/dev/null || true
   printf '%s\n' "$tok"
   # Notes go to stderr so a caller capturing `$(... token ...)` gets only the token.
   if [ -n "$ttl" ]; then info "expires in ${expires_spec}" >&2; else info "non-expiring token" >&2; fi
@@ -305,30 +405,54 @@ PY
   fi
 }
 
-# token-list  — show configured tokens with the secret REDACTED (user, prefixes,
-# expiry only). Never prints the full token string.
+# token-list [--expired]  — show configured tokens with the secret REDACTED
+# (user, prefixes, expiry, created_by, comment). Never prints the full token
+# string. With --expired, show only tokens whose expires_at is in the past.
 cmd_token_list() {
   local tokfile="$ROOT/tokens.json"
   [ -f "$tokfile" ] || die "no tokens.json yet — run: ./docmcp.sh setup"
   need_docker
   server_image_exists || die "build the image first: ./docmcp.sh setup"
+  local only="all"
+  case "${1:-}" in
+    --expired) only="expired" ;;
+    "")        : ;;
+    *)         die "usage: ./docmcp.sh token-list [--expired]" ;;
+  esac
   docker run --rm -i -v "$tokfile:/work/tokens.json:ro" "$SERVER_IMAGE" \
-    python - /work/tokens.json <<'PY'
+    python - /work/tokens.json "$only" <<'PY'
 import json, os, sys, time
 path = sys.argv[1]
+only = sys.argv[2] if len(sys.argv) > 2 else "all"
 data = json.load(open(path)) if os.path.getsize(path) > 0 else {}
 if not data:
     print("(no tokens)"); raise SystemExit
 now = time.time()
+shown_any = False
 for tok, rec in data.items():
-    shown = (tok[:8] + "…" + tok[-4:]) if len(tok) > 14 else "…"
     exp = rec.get("expires_at")
+    expired = bool(exp and exp < now)
+    if only == "expired" and not expired:
+        continue
+    shown = (tok[:8] + "…" + tok[-4:]) if len(tok) > 14 else "…"
     if exp:
-        status = "EXPIRED" if exp < now else "expires " + time.strftime("%Y-%m-%d", time.localtime(exp))
+        status = "EXPIRED" if expired else "expires " + time.strftime("%Y-%m-%d", time.localtime(exp))
     else:
         status = "no expiry"
-    print("  %-16s  user=%-12s  prefixes=%s  [%s]" % (
-        shown, rec.get("user", "?"), rec.get("allowed_prefixes"), status))
+    extra = ""
+    if rec.get("groups"):
+        extra += "  groups=%s" % rec["groups"]
+    if rec.get("writable_prefixes"):
+        extra += "  write=%s" % rec["writable_prefixes"]
+    if rec.get("created_by"):
+        extra += "  by=%s" % rec["created_by"]
+    if rec.get("comment"):
+        extra += "  # %s" % rec["comment"]
+    print("  %-16s  user=%-12s  prefixes=%s  [%s]%s" % (
+        shown, rec.get("user", "?"), rec.get("allowed_prefixes") or [], status, extra))
+    shown_any = True
+if not shown_any:
+    print("(no expired tokens)" if only == "expired" else "(no tokens)")
 PY
 }
 
@@ -344,20 +468,44 @@ cmd_token_rm() {
   local removed
   # Edit the bind-mounted tokens.json as the host user, via a context manager.
   removed="$(docker run --rm -i --user "$(id -u):$(id -g)" \
-    -v "$ROOT/tokens.json:/work/tokens.json" "$SERVER_IMAGE" \
+    -v "$ROOT:/work" "$SERVER_IMAGE" \
     python - /work/tokens.json "$target" <<'PY'
-import json, os, sys
+import fcntl, json, os, sys, tempfile
 path, target = sys.argv[1], sys.argv[2]
+d = os.path.dirname(path) or "."
+# Serialize with concurrent mint/revoke (flock a sibling lock file) so a revoke cannot
+# race a mint and lose updates; released on process exit.
+_lock = open(os.path.join(d, ".tokens.lock"), "a")
+fcntl.flock(_lock, fcntl.LOCK_EX)
 with open(path) as fh:
     data = json.load(fh) if os.path.getsize(path) > 0 else {}
 if target in data:                       # exact token string
     removed = [target]
 else:                                    # otherwise treat it as a user name
     removed = [t for t, r in data.items() if isinstance(r, dict) and r.get("user") == target]
+# Capture users BEFORE deletion so the audit never has to log a token string.
+removed_users = sorted({data[t].get("user", "?") for t in removed if isinstance(data.get(t), dict)})
 for t in removed:
     del data[t]
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2)
+# Atomic publish (temp + os.replace) so the live-reloading server never reads a
+# half-written file mid-revocation.
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".tokens.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.flush(); os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp); raise
+try:                                     # append-only audit (never the token string)
+    import time as _t
+    adir = os.path.join(d, "var"); os.makedirs(adir, exist_ok=True)
+    with open(os.path.join(adir, "token-audit.jsonl"), "a") as af:
+        af.write(json.dumps({"ts": int(_t.time()), "action": "revoke",
+                             "users": removed_users, "count": len(removed)}) + "\n")
+except OSError:
+    pass
 print("\n".join(removed))
 PY
 )" || die "failed to update tokens.json"
@@ -366,7 +514,7 @@ PY
   # Print the revoked tokens REDACTED (don't echo full secrets to the terminal).
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    if [ "${#t}" -gt 14 ]; then printf '  %s…%s\n' "${t:0:8}" "${t: -4}"; else printf '  %s\n' "$t"; fi
+    if [ "${#t}" -gt 14 ]; then printf '  %s…%s\n' "${t:0:8}" "${t: -4}"; else printf '  …\n'; fi
   done <<EOF
 $removed
 EOF
@@ -375,6 +523,277 @@ EOF
   else
     warn "start/restart the server for the revocation to take effect: ./docmcp.sh serve"
   fi
+}
+
+# group <name> <prefix> [<prefix> ...]  — define/update an RBAC group (a named set of
+# read prefixes) in groups.json. Tokens reference it via `token <user> --group <name>`,
+# so adding a folder to the group grants it to everyone in the group.
+cmd_group() {
+  [ "$#" -ge 2 ] || die "usage: ./docmcp.sh group <name> <prefix> [<prefix> ...]"
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  local name="$1"; shift
+  case "$name" in ""|*[!A-Za-z0-9_-]*) die "group name must match [A-Za-z0-9_-]+" ;; esac
+  local _p
+  for _p in "$@"; do
+    [ -n "$(printf '%s' "$_p" | tr -d '[:space:]')" ] || die "empty prefix not allowed"
+    [ -n "$(printf '%s' "$_p" | tr -d '/[:space:]')" ] \
+      || die "a bare '/' grants the WHOLE corpus — a group cannot hold it; use 'token <user> --all' for break-glass"
+  done
+  docker run --rm -i --user "$(id -u):$(id -g)" -v "$ROOT:/work" "$SERVER_IMAGE" \
+    python - /work/groups.json "$name" "$@" <<'PY'
+import fcntl, json, os, sys, tempfile
+path, name = sys.argv[1], sys.argv[2]
+prefixes = sys.argv[3:]
+d = os.path.dirname(path) or "."
+lock = open(os.path.join(d, ".tokens.lock"), "a"); fcntl.flock(lock, fcntl.LOCK_EX)
+data = json.load(open(path)) if os.path.exists(path) and os.path.getsize(path) > 0 else {}
+data[name] = prefixes
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".groups.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True); fh.flush(); os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600); os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp); raise
+print("group %s = %s" % (name, prefixes))
+PY
+  info "group '$name' saved. Tokens referencing it pick up the change on the next request."
+}
+
+# group-list  — show the defined groups and their prefixes.
+cmd_group_list() {
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  docker run --rm -i -v "$ROOT:/work:ro" "$SERVER_IMAGE" \
+    python - /work/groups.json <<'PY'
+import json, os, sys
+p = sys.argv[1]
+data = json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) > 0 else {}
+if not data:
+    print("(no groups — define one: ./docmcp.sh group <name> <prefix> ...)"); raise SystemExit
+for name, prefixes in sorted(data.items()):
+    print("  %-16s %s" % (name, prefixes))
+PY
+}
+
+# group-rm <name>  — delete a group. Tokens referencing it lose those prefixes.
+cmd_group_rm() {
+  [ "$#" -ge 1 ] || die "usage: ./docmcp.sh group-rm <name>"
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  docker run --rm -i --user "$(id -u):$(id -g)" -v "$ROOT:/work" "$SERVER_IMAGE" \
+    python - /work/groups.json "$1" <<'PY'
+import fcntl, json, os, sys, tempfile
+path, name = sys.argv[1], sys.argv[2]
+d = os.path.dirname(path) or "."
+lock = open(os.path.join(d, ".tokens.lock"), "a"); fcntl.flock(lock, fcntl.LOCK_EX)
+data = json.load(open(path)) if os.path.exists(path) and os.path.getsize(path) > 0 else {}
+if name not in data:
+    print("no such group: %s" % name); raise SystemExit
+del data[name]
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".groups.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True); fh.flush(); os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600); os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp); raise
+print("removed group %s" % name)
+PY
+}
+
+# token-rotate <user>  — mint a fresh token carrying the user's existing scope
+# (union of read prefixes + groups + writable_prefixes, comment, expiry style) and
+# revoke the old one(s).
+cmd_token_rotate() {
+  [ "$#" -ge 1 ] || die "usage: ./docmcp.sh token-rotate <user>"
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  [ -f "$ROOT/tokens.json" ] || die "no tokens.json — run: ./docmcp.sh setup"
+  local user="$1" newtok
+  newtok="$(TOKEN_BY="$(id -un 2>/dev/null || echo "${USER:-operator}")" \
+    docker run --rm -i --user "$(id -u):$(id -g)" -e TOKEN_BY -v "$ROOT:/work" "$SERVER_IMAGE" \
+    python - /work/tokens.json "$user" <<'PY'
+import fcntl, json, os, secrets, sys, tempfile, time
+path, user = sys.argv[1], sys.argv[2]
+d = os.path.dirname(path) or "."
+lock = open(os.path.join(d, ".tokens.lock"), "a"); fcntl.flock(lock, fcntl.LOCK_EX)
+data = json.load(open(path)) if os.path.getsize(path) > 0 else {}
+old = {t: r for t, r in data.items() if isinstance(r, dict) and r.get("user") == user}
+if not old:
+    sys.stderr.write("no tokens for user: %s\n" % user); sys.exit(1)
+prefixes, groups, writes, comment = [], [], [], None
+for r in old.values():
+    for p in r.get("allowed_prefixes", []) or []:
+        if p not in prefixes: prefixes.append(p)
+    for g in r.get("groups", []) or []:
+        if g not in groups: groups.append(g)
+    for w in r.get("writable_prefixes", []) or []:  # optional portal WRITE scope
+        if w not in writes: writes.append(w)
+    if r.get("comment") and not comment:
+        comment = r.get("comment")
+rec = {"user": user, "created_at": int(time.time()), "last_rotated_at": int(time.time()),
+       "created_by": os.environ.get("TOKEN_BY") or "operator"}
+if prefixes: rec["allowed_prefixes"] = prefixes
+if groups: rec["groups"] = groups
+if writes: rec["writable_prefixes"] = writes
+if comment: rec["comment"] = comment
+# Preserve expiry STYLE: only make the new token expiring if EVERY old one was.
+if all(r.get("expires_at") for r in old.values()):
+    rec["expires_at"] = int(time.time()) + 90 * 86400
+newtok = "tok_%s_%s" % (user, secrets.token_hex(12))
+for t in list(old): del data[t]
+data[newtok] = rec
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".tokens.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2); fh.flush(); os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600); os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp); raise
+try:
+    adir = os.path.join(d, "var"); os.makedirs(adir, exist_ok=True)
+    with open(os.path.join(adir, "token-audit.jsonl"), "a") as af:
+        af.write(json.dumps({"ts": int(time.time()), "action": "rotate", "user": user,
+                             "by": rec["created_by"], "replaced": len(old)}) + "\n")
+except OSError:
+    pass
+print(newtok)
+PY
+)" || die "rotate failed — no tokens for '$user'? (see ./docmcp.sh token-list)"
+  printf '%s\n' "$newtok"
+  info "rotated $user: new token minted, previous token(s) revoked" >&2
+  if is_running docs-mcp; then dc restart docs-mcp >/dev/null && info "reloaded the running server" >&2; fi
+}
+
+# access-check <user> <logical-path>  — does the user's effective scope allow the path?
+# Prints ALLOW/DENY and exits 0/1 (2 = unknown user). Resolves groups + RBAC, no live request.
+cmd_access_check() {
+  [ "$#" -ge 2 ] || die "usage: ./docmcp.sh access-check <user> </logical/path>"
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  local rc=0
+  docker run --rm -i -v "$ROOT:/work:ro" "$SERVER_IMAGE" \
+    python - /work/tokens.json /work/groups.json "$1" "$2" <<'PY' || rc=$?
+import json, os, sys
+from docmcp import rbac
+from docmcp.auth import effective_prefixes
+tp, gp, user, target = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+tokens = json.load(open(tp)) if os.path.exists(tp) and os.path.getsize(tp) > 0 else {}
+groups = json.load(open(gp)) if os.path.exists(gp) and os.path.getsize(gp) > 0 else {}
+recs = [r for r in tokens.values() if isinstance(r, dict) and r.get("user") == user]
+if not recs:
+    print("UNKNOWN  user=%s has no tokens" % user); sys.exit(2)
+eff = []
+for r in recs:
+    for p in effective_prefixes(r, groups):
+        if p not in eff: eff.append(p)
+ok = rbac.is_allowed(target, eff)
+print("%s  user=%s  path=%s  (effective: %s)" % ("ALLOW" if ok else "DENY", user, target, eff))
+sys.exit(0 if ok else 1)
+PY
+  return "$rc"
+}
+
+# audit [N]  — show the last N (default 20) token create/revoke/rotate events.
+cmd_audit() {
+  local log="$ROOT/var/token-audit.jsonl"
+  [ -f "$log" ] || { info "(no audit log yet: $log)"; return 0; }
+  tail -n "${1:-20}" "$log"
+}
+
+# access-tree  — print the whole access model as a tree: GROUPS (their folders + which
+# users belong) and USERS (each token's read scope incl. group-derived folders, and its
+# write scope). Read-only; tokens are redacted. Lets an admin see who can read/write what.
+cmd_access_tree() {
+  need_docker; server_image_exists || die "build the image first: ./docmcp.sh setup"
+  # Mount the repo dir :ro so the sibling groups.json resolves (a single-file bind of a
+  # missing groups.json would create a stray directory).
+  docker run --rm -i -v "$ROOT:/work:ro" "$SERVER_IMAGE" \
+    python - /work/tokens.json /work/groups.json <<'PY'
+import json, os, sys, time
+try:
+    from docmcp.auth import effective_writable_prefixes  # authoritative write resolution
+except Exception:  # fallback so the tree still renders if the import path changes
+    def effective_writable_prefixes(rec):
+        wp = rec.get("writable_prefixes")
+        return [p for p in wp if isinstance(p, str)] if isinstance(wp, list) else []
+
+tp, gp = sys.argv[1], sys.argv[2]
+tokens = json.load(open(tp)) if os.path.exists(tp) and os.path.getsize(tp) > 0 else {}
+groups = json.load(open(gp)) if os.path.exists(gp) and os.path.getsize(gp) > 0 else {}
+now = time.time()
+
+def redact(t):
+    return (t[:8] + "…" + t[-4:]) if len(t) > 14 else "…"
+def show(p):
+    return "ALL (/)" if p.strip().strip("/") == "" else p
+def joinp(ps):
+    return ", ".join(show(p) for p in ps) if ps else "—"
+
+# group -> users that reference it; and references to groups that are not defined
+gmembers, undefined = {}, {}
+for tok, rec in tokens.items():
+    if not isinstance(rec, dict):
+        continue
+    user = rec.get("user", "?")
+    for g in (rec.get("groups") or []):
+        if isinstance(g, str):
+            (gmembers if g in groups else undefined).setdefault(g, set()).add(user)
+
+print("GROUPS (%d)" % len(groups))
+if not groups:
+    print("  (none — define one: ./docmcp.sh group <name> <prefix> ...)")
+gnames = sorted(groups)
+for i, name in enumerate(gnames):
+    last = (i == len(gnames) - 1)
+    pipe = " " if last else "│"
+    folders = [p for p in (groups.get(name) or []) if isinstance(p, str)]
+    members = sorted(gmembers.get(name, set()))
+    print("%s %s" % ("└─" if last else "├─", name))
+    print("%s    folders: %s" % (pipe, ", ".join(folders) if folders else "(none)"))
+    print("%s    members: %s" % (pipe, ", ".join(members) if members else "(none — no token references it)"))
+if undefined:
+    print("\n  ! tokens reference groups that are NOT defined:")
+    for g in sorted(undefined):
+        print("    - %s  (used by: %s) — define: ./docmcp.sh group %s <prefix> ..." % (
+            g, ", ".join(sorted(undefined[g])), g))
+
+byuser = {}
+for tok, rec in tokens.items():
+    if isinstance(rec, dict):
+        byuser.setdefault(rec.get("user", "?"), []).append((tok, rec))
+
+print("\nUSERS (%d)" % len(byuser))
+if not byuser:
+    print("  (no tokens — mint one: ./docmcp.sh token <user> <prefix> ...)")
+unames = sorted(byuser)
+for i, user in enumerate(unames):
+    last = (i == len(unames) - 1)
+    pipe = " " if last else "│"
+    print("%s %s" % ("└─" if last else "├─", user))
+    for tok, rec in byuser[user]:
+        exp = rec.get("expires_at")
+        if isinstance(exp, (int, float)):
+            st = ("EXPIRED " if exp < now else "expires ") + time.strftime("%Y-%m-%d", time.localtime(exp))
+        else:
+            st = "no expiry"
+        meta = ""
+        if rec.get("created_by"):
+            meta += "  by=%s" % rec["created_by"]
+        if rec.get("comment"):
+            meta += "  # %s" % rec["comment"]
+        explicit = [p for p in (rec.get("allowed_prefixes") or []) if isinstance(p, str)]
+        bits = [joinp(explicit)] if explicit else []
+        for g in (rec.get("groups") or []):
+            if not isinstance(g, str):
+                continue
+            if g in groups:
+                gf = [p for p in (groups.get(g) or []) if isinstance(p, str)]
+                bits.append("group:%s(%s)" % (g, ", ".join(gf) if gf else "—"))
+            else:
+                bits.append("group:%s(UNDEFINED)" % g)
+        read_str = "  +  ".join(bits) if bits else "— (no read access)"
+        print("%s    %s  [%s]%s" % (pipe, redact(tok), st, meta))
+        print("%s      read : %s" % (pipe, read_str))
+        print("%s      write: %s" % (pipe, joinp(effective_writable_prefixes(rec))))
+PY
 }
 
 # test [<token>]  — exercise the running server (list_docs + read_doc).
@@ -428,11 +847,221 @@ cmd_status() {
   if docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1 && server_image_exists; then
     local n
     n="$(docker run --rm -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
-      python -c 'import json,os; p="/srv/docs/curated/index.json"; print(len(json.load(open(p))) if os.path.exists(p) else 0)' 2>/dev/null || echo '?')"
+      python -c 'import json,os; p="/srv/docs/index.json"; print(len(json.load(open(p))) if os.path.exists(p) else 0)' 2>/dev/null || echo '?')"
     printf "  %-10s %s\n" "indexed" "${n} docs"
+    local last
+    last="$(docker run --rm -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+      python -c 'import json,os,time; p="/srv/docs/ingest-status.json"; s=json.load(open(p)) if os.path.exists(p) else None; print("%s (failed=%s)"%(time.strftime("%Y-%m-%d %H:%M",time.localtime(s["finished_at"])),s.get("failed","?")) if s else "never")' 2>/dev/null || echo '?')"
+    printf "  %-10s %s\n" "ingest" "$last"
   else
     printf "  %-10s %s\n" "indexed" "(not built yet — run ./docmcp.sh ingest)"
   fi
+}
+
+# inventory  — corpus breakdown from the built index (totals by type + by top-level
+# folder). Operator-side complement to the doc-report Codex skill (needs no client).
+cmd_inventory() {
+  need_docker; load_env
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1 || die "no store yet — run ./docmcp.sh ingest"
+  docker run --rm -i -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+    python - <<'PY'
+import collections, json, os
+ij = "/srv/docs/index.json"
+docs = json.load(open(ij)) if os.path.exists(ij) else []
+if not docs:
+    print("(index empty — run ./docmcp.sh ingest)"); raise SystemExit
+def human(n):
+    n = float(n)
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return "%.0f%s" % (n, u)
+        n /= 1024
+    return "%.1fTB" % n
+by_type, bytes_type, by_folder, total = (
+    collections.Counter(), collections.Counter(), collections.Counter(), 0)
+for d in docs:
+    t, b = d.get("type", "?"), d.get("bytes", 0)
+    by_type[t] += 1; bytes_type[t] += b; total += b
+    parts = d.get("path", "/").strip("/").split("/")
+    by_folder["/" + parts[0] if parts and parts[0] else "/"] += 1
+print("%d documents, %s total" % (len(docs), human(total)))
+print("\nby type:")
+for t, c in by_type.most_common():
+    print("  %-10s %4d  (%s)" % (t, c, human(bytes_type[t])))
+print("\nby top-level folder:")
+for f, c in sorted(by_folder.items()):
+    print("  %-16s %4d" % (f, c))
+PY
+}
+
+# doctor  — production health checks. Exits NON-ZERO if anything is unhealthy, so it
+# can gate a deploy. Validates: server up; tokens.json + groups.json parse through the
+# real token verifier (same code path as the server); index.json present+valid (+ doc
+# count); the search backend; the curated store is mounted read-only; the last ingest
+# result; and, when PORTAL_ENABLED, that the portal answers /healthz.
+cmd_doctor() {
+  need_docker; load_env
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  local fail=0
+  _dck() {  # name  ok(0=pass)  detail
+    if [ "$2" = 0 ]; then printf "  [PASS] %-14s %s\n" "$1" "$3"
+    else printf "  [FAIL] %-14s %s\n" "$1" "$3"; fail=1; fi
+  }
+  printf "%sdocmcp doctor%s\n" "$C_B" "$C_0"
+
+  is_running docs-mcp && _dck server 0 "running" || _dck server 1 "not running (./docmcp.sh serve)"
+
+  # tokens.json + groups.json validated through the SAME verifier the server uses
+  # (schema-checks both; groups.json is optional). Mount the repo dir :ro so a missing
+  # groups.json is simply absent (a single-file bind would create a stray directory).
+  # A missing/empty tokens.json means NO ONE can authenticate, so treat it as unhealthy
+  # rather than reporting a hollow "0 token(s)" as a PASS.
+  local tk
+  if [ ! -f "$ROOT/tokens.json" ]; then
+    _dck tokens.json 1 "missing — run ./docmcp.sh setup"
+  elif tk="$(docker run --rm -i -v "$ROOT:/work:ro" "$SERVER_IMAGE" \
+      python - /work/tokens.json <<'PY' 2>/dev/null
+import sys
+from docmcp.auth import JsonFileTokenVerifier
+try:
+    v = JsonFileTokenVerifier(sys.argv[1])   # sibling /work/groups.json auto-loaded + validated
+    if not v._digests:
+        print("no tokens configured (no one can authenticate) — run ./docmcp.sh token"); sys.exit(1)
+    print("%d token(s), %d group(s)" % (len(v._digests), len(v._groups)))
+except Exception as e:
+    print("invalid: %s" % e); sys.exit(1)
+PY
+  )"; then _dck tokens.json 0 "$tk"; else _dck tokens.json 1 "${tk:-unreadable/invalid}"; fi
+
+  if docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1; then
+    local ix
+    if ix="$(docker run --rm -i -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+        python - <<'PY' 2>/dev/null
+import json, os, sys, time
+root = "/srv/docs"
+ij = os.path.join(root, "index.json")
+if not os.path.exists(ij):
+    print("no index.json (run ./docmcp.sh ingest)"); sys.exit(1)
+try:
+    n = len(json.load(open(ij)))
+except Exception as e:
+    print("index.json invalid: %s" % e); sys.exit(1)
+st = os.path.join(root, "ingest-status.json")
+extra = ""
+if os.path.exists(st):
+    s = json.load(open(st))
+    extra = " | last ingest %s, failed=%s" % (
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("finished_at", 0))), s.get("failed", "?"))
+    if s.get("failed"):
+        print("%d docs, %d FAILED last ingest%s" % (n, s["failed"], extra)); sys.exit(1)
+print("%d docs%s" % (n, extra))
+PY
+    )"; then _dck index 0 "$ix"; else _dck index 1 "${ix:-no/invalid index}"; fi
+  else
+    _dck index 1 "docstore volume missing (run ./docmcp.sh ingest)"
+  fi
+
+  # Search backend actually usable? (fts5 db valid when selected; rg present otherwise)
+  local backend="${SEARCH_BACKEND:-ripgrep}"
+  if [ "$backend" = "fts5" ]; then
+    local fts
+    if docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1 && fts="$(
+        docker run --rm -i -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+        python - <<'PY' 2>/dev/null
+import os, sqlite3, sys
+db = "/srv/docs/index.sqlite"
+if not os.path.exists(db):
+    print("fts5 db missing (run ./docmcp.sh ingest)"); sys.exit(1)
+try:
+    c = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+    print("fts5 ok, %d lines" % c.execute("SELECT count(*) FROM doc_lines").fetchone()[0])
+except Exception as e:
+    print("fts5 invalid: %s" % e); sys.exit(1)
+PY
+    )"; then _dck search 0 "$fts"; else _dck search 1 "${fts:-fts5 db missing/invalid}"; fi
+  else
+    docker run --rm "$SERVER_IMAGE" rg --version >/dev/null 2>&1 \
+      && _dck search 0 "ripgrep available" || _dck search 1 "ripgrep missing in image"
+  fi
+
+  # The curated store MUST be mounted read-only in the running server (invariant).
+  if is_running docs-mcp; then
+    local cid rw
+    cid="$(dc ps -q docs-mcp 2>/dev/null)"
+    rw="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/srv/docs"}}{{.RW}}{{end}}{{end}}' "$cid" 2>/dev/null)"
+    case "$rw" in
+      false) _dck docstore-ro 0 "curated mounted read-only" ;;
+      true)  _dck docstore-ro 1 "curated is WRITABLE in docs-mcp — must be :ro" ;;
+      *)     _dck docstore-ro 1 "could not determine /srv/docs mount mode" ;;
+    esac
+  fi
+
+  # Portal (optional write surface): when enabled it must be up and answer /healthz.
+  if is_true "${PORTAL_ENABLED:-false}"; then
+    if is_running portal; then
+      if docker run --rm -i --network "$NET" "$SERVER_IMAGE" python - <<'PY' >/dev/null 2>&1
+import sys, urllib.request
+try:
+    r = urllib.request.urlopen("http://portal:8080/healthz", timeout=5)
+    sys.exit(0 if (r.status == 200 and r.read().strip() == b"ok") else 1)
+except Exception:
+    sys.exit(1)
+PY
+      then _dck portal 0 "healthz ok"; else _dck portal 1 "portal up but /healthz failed"; fi
+    else
+      _dck portal 1 "PORTAL_ENABLED but the portal container is not running (./docmcp.sh serve)"
+    fi
+  fi
+
+  if [ "$fail" = 0 ]; then info "healthy"; return 0; else warn "unhealthy"; return 1; fi
+}
+
+# backup [<dir>]  — snapshot the irreplaceable, NOT-version-controlled state into a
+# timestamped 0600 tar.gz (default: ./backups). Includes tokens.json, groups.json
+# (permission-critical: group-backed tokens lose access without it), .env, the token
+# audit log, the portal audit/version state (raw/.portal, gitignored), and the Caddy
+# TLS-data volume (certs; only on an HTTPS/DOMAIN deploy). NOT included: raw/ source
+# docs (backed up via Git LFS — push it) and the curated store + index (rebuildable
+# from raw/ via ./docmcp.sh ingest, so it's treated as cache). See RUNBOOK.md.
+cmd_backup() {
+  need_docker
+  server_image_exists || die "build the image first: ./docmcp.sh setup"
+  local dest="${1:-$ROOT/backups}"
+  mkdir -p "$dest" || die "cannot create backup dir: $dest"
+  local ts out staging
+  ts="$(date +%Y%m%d-%H%M%S)"
+  out="$dest/docmcp-backup-$ts.tar.gz"
+  staging="$(mktemp -d)" || die "mktemp failed"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$staging'" RETURN
+  local included="" skipped=""
+  if [ -f "$ROOT/tokens.json" ]; then cp "$ROOT/tokens.json" "$staging/"; included="$included tokens.json"; else skipped="$skipped tokens.json"; fi
+  # groups.json is permission-critical, gitignored, and NOT rebuildable: a token that
+  # references a group loses access if it's missing after a restore. Always capture it.
+  if [ -f "$ROOT/groups.json" ]; then cp "$ROOT/groups.json" "$staging/"; included="$included groups.json"; else skipped="$skipped groups.json"; fi
+  if [ -f "$ROOT/.env" ];        then cp "$ROOT/.env" "$staging/";        included="$included .env";        else skipped="$skipped .env";        fi
+  # Provenance/audit that is gitignored and unrecoverable once lost (best-effort).
+  if [ -f "$ROOT/var/token-audit.jsonl" ]; then mkdir -p "$staging/var"; cp "$ROOT/var/token-audit.jsonl" "$staging/var/"; included="$included token-audit"; fi
+  if [ -d "$ROOT/raw/.portal" ];           then cp -R "$ROOT/raw/.portal" "$staging/raw-portal";            included="$included portal-state"; fi
+  # Caddy TLS data (ACME certs) lives in the caddy_data volume; tar it via the
+  # image's python (runs as root so it can read root-owned cert files).
+  local cvol
+  # `|| true` so a no-match grep (no caddy_data volume — e.g. a plaintext/VPN install or
+  # backup before serve ever ran) does not abort the whole backup under `set -o pipefail`.
+  cvol="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E 'caddy_data$' | head -1 || true)"
+  if [ -n "$cvol" ] && docker run --rm -v "$cvol:/data:ro" -v "$staging:/out" "$SERVER_IMAGE" \
+        python -c "import tarfile; t=tarfile.open('/out/caddy_data.tar.gz','w:gz'); t.add('/data', arcname='caddy_data'); t.close()" 2>/dev/null; then
+    included="$included caddy_data"
+  else
+    skipped="$skipped caddy_data(none/HTTPS-only)"
+  fi
+  tar czf "$out" -C "$staging" . || die "failed to write $out"
+  chmod 600 "$out"
+  info "backup written: $out ($(du -h "$out" 2>/dev/null | cut -f1))"
+  info "included:${included:- (nothing)}"
+  [ -n "$skipped" ] && warn "skipped:$skipped"
+  info "raw/ is backed up via Git LFS (git push); curated store + index are rebuildable (./docmcp.sh ingest) — restore steps in RUNBOOK.md"
 }
 
 # schedule [<spec>|off]  — run `ingest` on a cron schedule. <spec> is one of:
@@ -508,9 +1137,17 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
   ${C_B}status${C_0}                    show services, URL, and index summary
-  ${C_B}token${C_0} <user> [prefix...] [--expires <Nd|Nh|never>]  mint a bearer token (default: / , 90d)
-  ${C_B}token-list${C_0}                show configured tokens
+  ${C_B}inventory${C_0}                 corpus breakdown by type + top-level folder
+  ${C_B}doctor${C_0}                    health checks (non-zero exit if unhealthy)
+  ${C_B}backup${C_0} [dir]             snapshot tokens.json + groups.json + .env + audit + Caddy certs (→ ./backups)
+  ${C_B}token${C_0} <user> <prefix...> [--group <name>] [--write <prefix>] [--expires <Nd|Nh|never>] [--comment <text>] | --all  mint a token (--write = portal upload scope)
+  ${C_B}token-list${C_0} [--expired]     show configured tokens (or only expired ones)
   ${C_B}token-rm${C_0} <token|user>     revoke a token (or all of a user's tokens)
+  ${C_B}token-rotate${C_0} <user>       mint a fresh token with the same scope; revoke the old
+  ${C_B}group${C_0} <name> <prefix...>   define/update an RBAC group; ${C_B}group-list${C_0} · ${C_B}group-rm${C_0} <name>
+  ${C_B}access-check${C_0} <user> <path> does the user's scope allow the path? (ALLOW/DENY)
+  ${C_B}access-tree${C_0} (alias ${C_B}tree${C_0})   who-can-read/write tree: groups (folders+members) + users
+  ${C_B}audit${C_0} [N]                  show the last N token create/revoke/rotate events
   ${C_B}logs${C_0}                      follow the server + proxy logs
   ${C_B}stop${C_0}                      stop services (your ingested store is kept)
   ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
@@ -529,6 +1166,10 @@ EOF
 }
 
 # --- dispatch ---------------------------------------------------------------
+# Only dispatch when EXECUTED directly. When this file is `source`d (e.g. by the
+# local_deploy.sh / remote_deploy.sh wizards, which reuse the helpers and cmd_* funcs),
+# stop here so sourcing just defines functions instead of running a command.
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   setup)              cmd_setup "$@" ;;
@@ -542,8 +1183,18 @@ case "$cmd" in
   token)              cmd_token "$@" ;;
   token-list|tokens)  cmd_token_list "$@" ;;
   token-rm|token-remove|revoke) cmd_token_rm "$@" ;;
+  token-rotate)       cmd_token_rotate "$@" ;;
+  group)              cmd_group "$@" ;;
+  group-list|groups)  cmd_group_list "$@" ;;
+  group-rm)           cmd_group_rm "$@" ;;
+  access-check)       cmd_access_check "$@" ;;
+  access-tree|tree)   cmd_access_tree "$@" ;;
+  audit)              cmd_audit "$@" ;;
   test)               cmd_test "$@" ;;
   status)             cmd_status "$@" ;;
+  inventory)          cmd_inventory "$@" ;;
+  doctor)             cmd_doctor "$@" ;;
+  backup)             cmd_backup "$@" ;;
   help|-h|--help)     usage ;;
   *)                  warn "unknown command: $cmd"; usage; exit 1 ;;
 esac

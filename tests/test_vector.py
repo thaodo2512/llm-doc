@@ -67,6 +67,7 @@ def test_semantic_search_disabled_errors_without_touching_vector(settings, monke
 
 def test_openai_embedder_wiring(settings, monkeypatch):
     """OpenAIEmbedder calls the API with the configured model (no network)."""
+    pytest.importorskip("openai")  # the `vector` extra; skip cleanly if not installed
     import docmcp.search.vector as vector_module
 
     captured = {}
@@ -96,7 +97,7 @@ def test_vector_search_enabled_returns_scoped_hits(ingested):
     from docmcp.docstore import DocStore
     from docmcp.search.vector import VectorSearch, embed_and_upsert
 
-    entries = DocStore(ingested.doc_root).load_index()
+    entries = DocStore(ingested.doc_root, ingested.index_json).load_index()
     fake = FakeEmbedder()
     count = embed_and_upsert(ingested, entries, embedder=fake, collection=TEST_COLLECTION)
     assert count > 0

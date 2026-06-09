@@ -22,13 +22,17 @@ services:
       BIND_HOST: "0.0.0.0"
       BIND_PORT: "8080"
       DOC_ROOT: /srv/docs/curated
+      # DOCSTORE_ROOT holds index/manifest/status/lock OUTSIDE the served DOC_ROOT,
+      # so they can't be read_doc'd. The server reads index.json from here (:ro).
+      DOCSTORE_ROOT: /srv/docs
       TOKENS_FILE: /srv/tokens.json
       FTS5_DB: /srv/docs/index.sqlite
     volumes:
       - docstore:/srv/docs:ro
       # tokens.json lives OUTSIDE the read-only docstore mount (can't create a
-      # mountpoint inside a :ro volume).
+      # mountpoint inside a :ro volume). groups.json (RBAC group defs) sits beside it.
       - ../tokens.json:/srv/tokens.json:ro
+      - ../groups.json:/srv/groups.json:ro
     expose:
       - "8080"          # internal only — intentionally no `ports:` mapping
 
@@ -50,7 +54,10 @@ services:
       # HTTP_PORT/HTTPS_PORT set the published (client-facing) port numbers; Caddy
       # always listens on container :80/:443, so these need no Caddyfile change.
       - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      # Bind :443 to the SAME interface as :80 so a loopback/VPN deploy (HTTP_BIND unset
+      # or a pinned IP) does not leave an all-interfaces :443 listener that contradicts
+      # its posture. The HTTPS profile sets HTTP_BIND=0.0.0.0, so :443 stays public there.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTPS_PORT:-443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -69,6 +76,7 @@ services:
     environment:
       SOURCE_DIRS: /srv/raw
       DOC_ROOT: /srv/docs/curated
+      DOCSTORE_ROOT: /srv/docs        # index/manifest/status/lock written here (rw)
       FTS5_DB: /srv/docs/index.sqlite
       # DOCLING_ARTIFACTS_PATH is baked into the ingest image — the vendored models
       # are COPY'd to /opt/docling/models at build time. Deliberately NOT mounting a
@@ -77,6 +85,33 @@ services:
     volumes:
       - ../raw:/srv/raw:ro          # mount your raw sources here
       - docstore:/srv/docs          # writes curated/ + index + index.sqlite
+
+  # Optional upload/manage portal (starts only with --profile portal). Reuses
+  # the slim server image, writes ONLY to raw/ (rw), has NO Docker socket and NO docstore
+  # mount. The existing cron `schedule` ingests what it writes; docs-mcp stays read-only.
+  portal:
+    image: docs-mcp:server
+    profiles: ["portal"]
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PORTAL_ENABLED: "true"
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8080"
+      DOC_ROOT: /srv/docs/curated     # only used to satisfy Settings.load's path guard
+      DOCSTORE_ROOT: /srv/docs
+      TOKENS_FILE: /srv/tokens.json
+      STAGING_ROOT: /srv/raw          # uploads land here (== the ingest source root)
+      # SESSION_SECRET and ALLOW_PLAINTEXT_PORTAL come from ../.env
+    command: ["docmcp-portal"]
+    volumes:
+      - ../raw:/srv/raw:rw            # the ONLY write mount
+      - ../tokens.json:/srv/tokens.json:ro
+      - ../groups.json:/srv/groups.json:ro
+    expose:
+      - "8080"                        # internal only — reached via Caddy /portal*
 
   qdrant:
     image: qdrant/qdrant:latest

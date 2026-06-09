@@ -9,11 +9,13 @@ method intersects paths with the caller's allowed prefixes; `read_doc` *denies*
 
 from __future__ import annotations
 
+import time
+
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
 
-from . import rbac
+from . import obs, rbac
 from .config import Settings
 from .docstore import DocStore, PathTraversalError
 from .types import DocContent, DocEntry, Hit
@@ -24,7 +26,7 @@ class DocTools:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.store = DocStore(settings.doc_root)
+        self.store = DocStore(settings.doc_root, settings.index_json)
         self._search = None  # lazily built keyword backend (M3)
 
     # -- list -----------------------------------------------------------------
@@ -97,11 +99,16 @@ class DocTools:
         return VectorSearch(self.settings).search(query, allowed_prefixes, self._clamp_limit(limit))
 
 
-def _caller_prefixes() -> list[str]:
+def _caller() -> tuple[str, list[str]]:
+    """The authenticated caller's (user_id, allowed_prefixes)."""
     token = get_access_token()
     if token is None:  # pragma: no cover - auth is enforced before tools run
         raise ToolError("Unauthorized")
-    return list(token.claims["allowed_prefixes"])
+    return token.claims["user"], list(token.claims["allowed_prefixes"])
+
+
+def _ms(t0: float) -> float:
+    return round((time.perf_counter() - t0) * 1000, 1)
 
 
 def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
@@ -114,14 +121,28 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
         Returns entries of {path, title, type, bytes, mtime}. Call this first to
         discover doc paths, then search_docs, then read_doc.
         """
-        return tools.do_list(path, _caller_prefixes())
+        user, prefixes = _caller()
+        t0 = time.perf_counter()
+        result = tools.do_list(path, prefixes)
+        obs.log_call(
+            tool="list_docs", user=user, n_prefixes=len(prefixes),
+            path=path, results=len(result), ms=_ms(t0),
+        )
+        return result
 
     @mcp.tool
     async def search_docs(query: str, limit: int = 10) -> list[Hit]:
         """Keyword/full-text search. Returns {path, line, snippet, score} hits
         restricted to your allowed prefixes. Use exact terms: code symbols,
         config keys, error strings. `limit` is capped server-side."""
-        return tools.do_search(query, limit, _caller_prefixes())
+        user, prefixes = _caller()
+        t0 = time.perf_counter()
+        result = tools.do_search(query, limit, prefixes)
+        obs.log_call(
+            tool="search_docs", user=user, n_prefixes=len(prefixes),
+            qlen=len(query or ""), results=len(result), ms=_ms(t0),
+        )
+        return result
 
     @mcp.tool
     async def read_doc(
@@ -131,12 +152,40 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
         {path, content, total_lines, truncated}. Large reads are bounded; when
         `truncated` is true, request a narrower line range. Denied if `path` is
         outside your prefixes."""
-        return tools.do_read(path, start_line, end_line, _caller_prefixes())
+        user, prefixes = _caller()
+        t0 = time.perf_counter()
+        try:
+            result = tools.do_read(path, start_line, end_line, prefixes)
+        except ToolError as exc:
+            obs.log_call(
+                tool="read_doc", user=user, n_prefixes=len(prefixes), path=path,
+                denied=str(exc).startswith("Access denied"), error=type(exc).__name__, ms=_ms(t0),
+            )
+            raise
+        obs.log_call(
+            tool="read_doc", user=user, n_prefixes=len(prefixes), path=path,
+            lines=result.total_lines, truncated=result.truncated, ms=_ms(t0),
+        )
+        return result
 
     @mcp.tool
     async def semantic_search(query: str, limit: int = 10) -> list[Hit]:
         """Optional vector search. Returns a disabled error unless ENABLE_VECTOR
         is set. Same {path, line, snippet, score} shape, prefix-filtered."""
-        return tools.do_semantic_search(query, limit, _caller_prefixes())
+        user, prefixes = _caller()
+        t0 = time.perf_counter()
+        try:
+            result = tools.do_semantic_search(query, limit, prefixes)
+        except ToolError as exc:
+            obs.log_call(
+                tool="semantic_search", user=user, n_prefixes=len(prefixes),
+                error=type(exc).__name__, ms=_ms(t0),
+            )
+            raise
+        obs.log_call(
+            tool="semantic_search", user=user, n_prefixes=len(prefixes),
+            qlen=len(query or ""), results=len(result), ms=_ms(t0),
+        )
+        return result
 
     return tools

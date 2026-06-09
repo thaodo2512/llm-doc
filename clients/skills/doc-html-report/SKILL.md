@@ -2,7 +2,7 @@
 name: doc-html-report
 description: >-
   Generate a single self-contained HTML report containing the available content of
-  the internal documentation (via the docs MCP server), with explicit truncation
+  the documentation (via the docs MCP server), with explicit truncation
   warnings when the server caps a read. Use when the user asks to create, build,
   export, or generate an HTML report/copy/bundle of the docs, or wants a
   shareable HTML file of the documentation.

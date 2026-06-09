@@ -19,6 +19,8 @@ classifiers = [
 dependencies = [
     "fastmcp>=3.0,<4.0",
     "starlette>=0.37",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0",
 ]
 
@@ -44,6 +46,7 @@ dev = [
 [project.scripts]
 docmcp-server = "docmcp.server:main"
 docmcp-ingest = "docmcp.ingest.pipeline:main"
+docmcp-portal = "docmcp.portal.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docmcp"]

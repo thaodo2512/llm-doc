@@ -65,6 +65,7 @@ class Settings:
     """Resolved, validated configuration. Immutable once loaded."""
 
     doc_root: Path
+    docstore_root: Path
     source_dirs: list[str]
     bind_host: str
     bind_port: int
@@ -85,18 +86,44 @@ class Settings:
     max_read_bytes: int = 1_048_576  # most bytes read_doc will pull off disk in one call
     max_read_lines: int = 5000  # most lines read_doc will return in one call
 
-    # Index/manifest locations are derived from the doc root so they travel with it.
+    # Optional upload/manage portal (a WRITE surface; OFF by default). Defaulted for
+    # easy direct construction; Settings.load() sets them from the environment.
+    portal_enabled: bool = False
+    session_secret: str = ""  # HMAC key for portal session cookies (required if enabled)
+    staging_root: Path | None = None  # where the portal writes uploads; None => SOURCE_DIRS[0]
+    max_upload_bytes: int = 26_214_400  # 25 MiB per file
+    max_upload_files: int = 20  # files per upload request
+    allow_plaintext_portal: bool = False  # opt-in: serve portal cookies over plain HTTP
+
+    # Internal/derived files live at the DOCSTORE ROOT, *outside* DOC_ROOT, so they
+    # are never reachable by read_doc/list/search (DocStore.resolve is contained to
+    # DOC_ROOT). DOC_ROOT holds only readable curated docs. See PLAN Appendix A.5.
     @property
     def index_json(self) -> Path:
-        return self.doc_root / "index.json"
+        return self.docstore_root / "index.json"
 
     @property
     def index_md(self) -> Path:
-        return self.doc_root / "index.md"
+        return self.docstore_root / "index.md"
 
     @property
     def manifest_file(self) -> Path:
-        return self.doc_root / ".manifest.json"
+        return self.docstore_root / ".manifest.json"
+
+    @property
+    def ingest_status_file(self) -> Path:
+        """Operator-facing run summary (last ingest result). Read by `doctor`."""
+        return self.docstore_root / "ingest-status.json"
+
+    @property
+    def ingest_lock_file(self) -> Path:
+        """Cross-process ingest lock (fcntl.flock target). See PLAN Appendix A.4."""
+        return self.docstore_root / ".ingest.lock"
+
+    @property
+    def groups_file(self) -> Path:
+        """Optional RBAC group definitions ({name: [prefixes]}); sibling of tokens.json."""
+        return self.tokens_file.parent / "groups.json"
 
     @classmethod
     def load(cls, *, dotenv: bool = True) -> "Settings":
@@ -110,14 +137,29 @@ class Settings:
                 f"SEARCH_BACKEND must be one of {sorted(VALID_BACKENDS)}, got {backend!r}"
             )
 
+        # DOC_ROOT holds only readable curated docs; everything internal/derived
+        # (index, manifest, status, lock, sqlite) lives at the DOCSTORE ROOT, which
+        # defaults to DOC_ROOT's parent. Refuse a config where DOC_ROOT is not a
+        # strict subdirectory, so internal files can never land in the served tree.
+        doc_root = Path(env.get("DOC_ROOT", "/srv/docs/curated")).expanduser()
+        docstore_root = Path(env.get("DOCSTORE_ROOT", str(doc_root.parent))).expanduser()
+        _dr, _sr = doc_root.resolve(), docstore_root.resolve()
+        if _dr == _sr or not _dr.is_relative_to(_sr):
+            raise ValueError(
+                "DOC_ROOT must be a strict subdirectory of DOCSTORE_ROOT so internal "
+                "index/manifest/status/lock files stay outside the readable doc tree "
+                f"(DOC_ROOT={doc_root}, DOCSTORE_ROOT={docstore_root})"
+            )
+
         return cls(
-            doc_root=Path(env.get("DOC_ROOT", "/srv/docs/curated")).expanduser(),
+            doc_root=doc_root,
+            docstore_root=docstore_root,
             source_dirs=_split_csv(env.get("SOURCE_DIRS", "/srv/docs/raw")),
             bind_host=env.get("BIND_HOST", "127.0.0.1"),
             bind_port=_as_int(env.get("BIND_PORT", "8080"), name="BIND_PORT", minimum=1, maximum=65535),
             tokens_file=Path(env.get("TOKENS_FILE", "/srv/docs/tokens.json")).expanduser(),
             search_backend=backend,
-            fts5_db=Path(env.get("FTS5_DB", "/srv/docs/index.sqlite")).expanduser(),
+            fts5_db=Path(env.get("FTS5_DB", str(docstore_root / "index.sqlite"))).expanduser(),
             enable_vector=_as_bool(env.get("ENABLE_VECTOR", "false")),
             qdrant_url=env.get("QDRANT_URL", "http://qdrant:6333"),
             openai_api_key=env.get("OPENAI_API_KEY", ""),
@@ -136,16 +178,40 @@ class Settings:
             max_read_lines=_as_int(
                 env.get("MAX_READ_LINES", "5000"), name="MAX_READ_LINES", minimum=1
             ),
+            portal_enabled=_as_bool(env.get("PORTAL_ENABLED", "false")),
+            session_secret=env.get("SESSION_SECRET", ""),
+            staging_root=(
+                Path(env["STAGING_ROOT"]).expanduser() if env.get("STAGING_ROOT") else None
+            ),
+            max_upload_bytes=_as_int(
+                env.get("MAX_UPLOAD_BYTES", "26214400"), name="MAX_UPLOAD_BYTES", minimum=1024
+            ),
+            max_upload_files=_as_int(
+                env.get("MAX_UPLOAD_FILES", "20"), name="MAX_UPLOAD_FILES", minimum=1
+            ),
+            allow_plaintext_portal=_as_bool(env.get("ALLOW_PLAINTEXT_PORTAL", "false")),
         )
+
+    @property
+    def staging_dir(self) -> Path:
+        """The raw-source root the portal writes uploads into (defaults to the first
+        SOURCE_DIRS entry). Uploads are contained under here; ingest reads from here."""
+        if self.staging_root is not None:
+            return self.staging_root
+        return Path(self.source_dirs[0]).expanduser() if self.source_dirs else Path("/srv/raw")
 
     def redacted(self) -> dict:
         """Dict form for printing/logging — never exposes the API key."""
         data = asdict(self)
-        for key in ("doc_root", "tokens_file", "fts5_db"):
+        for key in ("doc_root", "docstore_root", "tokens_file", "fts5_db"):
             data[key] = str(getattr(self, key))
         data["openai_api_key"] = "***set***" if self.openai_api_key else ""
+        data["session_secret"] = "***set***" if self.session_secret else ""
+        data["staging_root"] = str(self.staging_root) if self.staging_root else None
         data["qdrant_url"] = _redact_url(self.qdrant_url)  # may carry credentials
         data["index_json"] = str(self.index_json)
+        data["manifest_file"] = str(self.manifest_file)
+        data["ingest_status_file"] = str(self.ingest_status_file)
         data["fts5_db"] = str(self.fts5_db)
         return data
 

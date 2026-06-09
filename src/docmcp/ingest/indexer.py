@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from ..atomicio import atomic_write_text
 from ..config import Settings
 from ..types import IndexEntry
 
@@ -30,7 +31,9 @@ def build_entries(settings: Settings, manifest: dict) -> list[IndexEntry]:
     """Derive index entries from the manifest, reading each curated file."""
     entries: list[IndexEntry] = []
     for source_path, rec in manifest.items():
-        curated_logical = rec["curated_path"]
+        curated_logical = rec.get("curated_path")
+        if not curated_logical or rec.get("status") == "failed":
+            continue  # failed sources have no curated file
         type_ = rec["type"]
         fs = settings.doc_root / curated_logical.lstrip("/")
         if not fs.is_file():
@@ -53,10 +56,12 @@ def build_entries(settings: Settings, manifest: dict) -> list[IndexEntry]:
 
 
 def write_index(settings: Settings, entries: list[IndexEntry]) -> None:
-    settings.doc_root.mkdir(parents=True, exist_ok=True)
-    settings.index_json.write_text(
+    # index.json/index.md live at the docstore root (outside DOC_ROOT); write both
+    # atomically so a concurrent reader never sees a half-written index.
+    settings.docstore_root.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        settings.index_json,
         json.dumps([entry.model_dump() for entry in entries], indent=2, sort_keys=True),
-        encoding="utf-8",
     )
     lines = ["# Documentation index", "", f"{len(entries)} document(s).", ""]
     for entry in entries:
@@ -65,4 +70,4 @@ def write_index(settings: Settings, entries: list[IndexEntry]) -> None:
             f"- [`{entry.path}`]({target}) — {entry.title}  "
             f"_({entry.type}, {entry.bytes} bytes)_"
         )
-    settings.index_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(settings.index_md, "\n".join(lines) + "\n")

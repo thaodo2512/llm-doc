@@ -20,9 +20,14 @@ class PathTraversalError(Exception):
 
 
 class DocStore:
-    def __init__(self, doc_root: Path):
+    def __init__(self, doc_root: Path, index_path: Path | None = None):
         # Resolve once; all containment checks compare against this real root.
         self._root = Path(doc_root).expanduser().resolve()
+        # index.json now lives at the DOCSTORE ROOT (outside DOC_ROOT) so it can't be
+        # read_doc'd; callers pass its real path. Default keeps older callers working.
+        self._index_path = (
+            Path(index_path).expanduser() if index_path is not None else self._root / "index.json"
+        )
 
     @property
     def root(self) -> Path:
@@ -103,8 +108,7 @@ class DocStore:
 
     def load_index(self) -> list[IndexEntry]:
         """Load index.json (empty list if it does not exist yet)."""
-        index_path = self._root / "index.json"
-        if not index_path.is_file():
+        if not self._index_path.is_file():
             return []
-        raw = json.loads(index_path.read_text(encoding="utf-8"))
+        raw = json.loads(self._index_path.read_text(encoding="utf-8"))
         return [IndexEntry.model_validate(item) for item in raw]

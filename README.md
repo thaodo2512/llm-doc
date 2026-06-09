@@ -21,7 +21,7 @@ Codex (laptop) --VPN--> internal network --HTTP + bearer token (raw IP)--> [ Cad
 |------|---------|-------|
 | `list_docs(path="")` | `[{path,title,type,bytes,mtime}]` | index entries under `path` |
 | `search_docs(query, limit=10)` | `[{path,line,snippet,score}]` | keyword (ripgrep/FTS5) |
-| `read_doc(path, start_line?, end_line?)` | `{path,content,total_lines,truncated}` | denies paths outside your prefixes; `truncated=true` when the read is capped (page with a line range) |
+| `read_doc(path, start_line?, end_line?)` | `{path,content,total_lines,truncated}` | denies paths outside your prefixes; `truncated=true` when the result is clipped by the size/line caps (a full read of a large doc, or a too-wide range) — request a narrower line range |
 | `semantic_search(query, limit=10)` | `[{path,line,snippet,score}]` | disabled unless `ENABLE_VECTOR=true` |
 
 All tools are filtered to the caller's `allowed_prefixes`; `read_doc` *denies* (not silently empties)
@@ -247,26 +247,55 @@ build needs **no model downloads** — a clone pulls the models with the repo, a
 
 ## Issuing tokens
 
-`tokens.json` maps an opaque token to a user and the path prefixes they may read:
+`tokens.json` maps an opaque token to a user and the path prefixes they may read; a token may
+also reference **groups** (named prefix sets defined in `groups.json`):
 
 ```json
+// groups.json:  { "firmware": ["/team-fw"], "public": ["/public"] }
 {
-  "tok_alice_xxx": { "user": "alice", "allowed_prefixes": ["/"] },
-  "tok_bob_xxx":   { "user": "bob",   "allowed_prefixes": ["/public", "/team-fw"] }
+  "tok_bob_xxx":   { "user": "bob",   "allowed_prefixes": ["/public", "/team-fw"] },
+  "tok_alice_xxx": { "user": "alice", "groups": ["firmware"] }   // resolves to /team-fw
 }
 ```
 
-Mint, list, and revoke tokens with the helper (each reloads the running server automatically):
+Mint, list, revoke, rotate (each reloads the running server automatically):
 
 ```bash
-./docmcp.sh token alice /public /team-fw   # mint a scoped token
-./docmcp.sh token-list                     # show configured tokens
-./docmcp.sh token-rm tok_alice_xxxx        # revoke one token  (or: token-rm alice → all of alice's)
+./docmcp.sh token alice /public /team-fw   # mint a scoped token (a scope is REQUIRED)
+./docmcp.sh token bob --group firmware      # mint via a group (inherits the group's prefixes)
+./docmcp.sh token admin --all               # whole corpus (admin/break-glass; never the default)
+./docmcp.sh token-list                       # show tokens (prefixes, groups, expiry, who minted)
+./docmcp.sh token-rm tok_alice_xxxx          # revoke one token  (or: token-rm alice → all of alice's)
+./docmcp.sh token-rotate alice               # mint a fresh token with alice's scope; revoke the old
 ```
 
+Manage groups and verify/audit access:
+
+```bash
+./docmcp.sh group firmware /team-fw          # define/update a group (group-list, group-rm)
+./docmcp.sh access-check alice /team-fw/x.md  # → ALLOW/DENY (resolves groups + RBAC)
+./docmcp.sh audit                            # recent token create/revoke/rotate events
+```
+
+### Optional: upload/manage portal
+
+A browser portal lets non-technical teammates **publish docs without git**. It is a separate
+service that writes **only** to `raw/` (the cron `schedule` ingests it); `docs-mcp` stays
+read-only. Grant write access with `--write`, enable it, and start:
+
+```bash
+./docmcp.sh token alice /team-fw --write /team-fw   # read + write /team-fw
+# .env: PORTAL_ENABLED=true, ALLOW_PLAINTEXT_PORTAL=true (VPN) or DOMAIN=<host> (HTTPS)
+./docmcp.sh schedule 5m && ./docmcp.sh serve        # portal at <server>/portal
+```
+
+Full security model + operations in **[`docs/PORTAL.md`](docs/PORTAL.md)**.
+
 Keep `tokens.json` out of VCS and readable only by the server (it is bind-mounted read-only). The
-server loads it at startup — restart `docs-mcp` after manual edits. An optional `"expires_at": <epoch>` per token is
-honored. Tokens are compared in constant time and never logged.
+server **reloads it automatically** when the file's mtime changes, so `./docmcp.sh token`/`token-rm`
+take effect on the next request without a restart (the helper also restarts defensively). For a
+manual edit, write the file **atomically** (temp + `mv`) so a reload never sees a half-written file.
+An optional `"expires_at": <epoch>` per token is honored. Tokens are compared in constant time and never logged.
 
 ## Codex client setup
 
@@ -367,7 +396,8 @@ then restart Codex and check the [skills docs](https://developers.openai.com/cod
 
 **Troubleshooting**
 - **401 Unauthorized** → verify `DOCS_MCP_TOKEN` is exported in the shell that starts Codex and that
-  the server was restarted after the token was minted or revoked.
+  the token exists in `tokens.json` (the server reloads on the file's mtime change — mint/revoke take
+  effect on the next request, no restart needed).
 - **403 Forbidden origin** → browser-style clients must use an `Origin` listed in `ALLOWED_ORIGINS`.
   Codex CLI normally sends no `Origin` header.
 - **400/4xx host errors** → add the exact hostname/IP in the MCP URL to `ALLOWED_HOSTS`, then restart
@@ -384,11 +414,45 @@ then restart Codex and check the [skills docs](https://developers.openai.com/cod
   Use your server's VPN/LAN IP; `--allow-http` is required for plain `http://` and should be removed
   for an `https://` URL.
 
+## Using the docs from Codex
+
+Once connected, just ask in natural language — the agent calls `list_docs` → `search_docs`
+→ `read_doc` and **cites the doc path** it used. Search is keyword-first, so name the
+**exact terms** (commands, config keys, error strings, symbols, spec numbers).
+
+```text
+Use the docs MCP server. Find the firmware flashing runbook and summarize the steps.
+Search our docs for DEPLOY_TOKEN and cite the doc path and line.
+List the docs I can access under /team-fw.
+What does our PLDM spec say about completion codes? Cite the spec path.
+Open /team-fw/flashing.md lines 1–40.
+```
+
+Tips for good answers:
+
+- **Be specific** — `search_docs` matches literal terms, so "search for `E_FLASH_TIMEOUT`"
+  beats "find the flashing error".
+- **Ask for the citation** ("cite the path and line") so you can verify against the source.
+- If a read says **`truncated=true`**, ask for a narrower line range.
+- You only ever see docs your **token's prefixes** allow — `list_docs` is pre-filtered.
+
+If you installed the bundled **skills** (`clients/skills/`), these trigger automatically:
+`docs` (find/cite), `doc-report` (a terminal inventory — *"what docs do we have?"*), and
+`doc-html-report` (a shareable HTML report). Writing docs that retrieve well is its own
+skill — see **[`docs/AUTHORING.md`](docs/AUTHORING.md)**.
+
 ## Configuration
 
-Server (see `.env.example`): `DOC_ROOT`, `SOURCE_DIRS`, `BIND_HOST`/`BIND_PORT`, `TOKENS_FILE`,
-`SEARCH_BACKEND` (`ripgrep`|`fts5`), `FTS5_DB`, `ENABLE_VECTOR`, `QDRANT_URL`, `OPENAI_API_KEY`,
-`OPENAI_EMBED_MODEL`, `EMBED_CHUNK_TOKENS`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`, `TOKEN_TTL`.
+Server (see `.env.example`): `DOC_ROOT`, `DOCSTORE_ROOT`, `SOURCE_DIRS`, `BIND_HOST`/`BIND_PORT`,
+`TOKENS_FILE`, `SEARCH_BACKEND` (`ripgrep`|`fts5`), `FTS5_DB`, `ENABLE_VECTOR`, `QDRANT_URL`,
+`OPENAI_API_KEY`, `OPENAI_EMBED_MODEL`, `EMBED_CHUNK_TOKENS`, `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`,
+`TOKEN_TTL`, `LOG_REQUESTS`.
+
+- **`DOCSTORE_ROOT`** (default = `DOC_ROOT`'s parent, e.g. `/srv/docs`): where the index, manifest,
+  `ingest-status.json`, lock, and FTS5 db live — **outside** `DOC_ROOT` so they're never `read_doc`-able.
+  `DOC_ROOT` must be a strict subdirectory of it.
+- **`LOG_REQUESTS`** (default `true`): emit one structured JSON access-log line per tool call (user,
+  tool, prefix count, path, result size, ms — never the token/content). Set `false` to disable.
 
 Network exposure (consumed by `docmcp.sh` / Caddy — see the [profiles above](#deploy-to-a-linux-server-x86_64)):
 `HTTP_BIND` (host interface the plaintext listener binds to), `HTTP_PORT`/`HTTPS_PORT` (client-facing
@@ -426,8 +490,6 @@ never travel plaintext on a network you don't trust. Tokens are constant-time co
 and honor an optional `expires_at`. `read_doc`/`search_docs` are bounded (`MAX_READ_*`,
 `MAX_SEARCH_LIMIT`) so an authenticated caller can't exhaust resources. Add per-token rate limiting at
 the proxy (see `docker/Caddyfile`).
-
-See `CLAUDE.md` for architecture orientation.
 
 ## License
 

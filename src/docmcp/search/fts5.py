@@ -8,6 +8,7 @@ scoped by a SQL prefix filter plus the shared RBAC post-filter.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -20,12 +21,22 @@ _SNIPPET = "snippet(doc_lines, 2, '[', ']', '…', 12)"
 
 
 def build_fts5_index(settings: Settings, entries: list[IndexEntry]) -> None:
-    """(Re)build the FTS5 database from curated docs (full rebuild for correctness)."""
+    """(Re)build the FTS5 database from curated docs (full rebuild for correctness).
+
+    Built into a fresh ``*.tmp`` database and atomically ``os.replace``d into place,
+    so a concurrent query (which opens a new read-only connection by path per call)
+    never sees a half-built / dropped table.
+    """
     db_path = Path(settings.fts5_db).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    # Clear any stale temp DBs left by a crashed prior build (any pid). Safe to
+    # remove all of them: ingest is single-flight under the ingest lock.
+    for stale in db_path.parent.glob(f".{db_path.name}.*.tmp"):
+        stale.unlink(missing_ok=True)
+    tmp_path = db_path.with_name(f".{db_path.name}.{os.getpid()}.tmp")
+    conn = sqlite3.connect(str(tmp_path))
     try:
-        conn.execute("DROP TABLE IF EXISTS doc_lines")
+        # Fresh db file → no DROP needed; create the virtual table and fill it.
         conn.execute(
             "CREATE VIRTUAL TABLE doc_lines USING fts5(path UNINDEXED, line_no UNINDEXED, text)"
         )
@@ -40,8 +51,15 @@ def build_fts5_index(settings: Settings, entries: list[IndexEntry]) -> None:
                     rows.append((entry.path, line_no, line))
         conn.executemany("INSERT INTO doc_lines(path, line_no, text) VALUES (?, ?, ?)", rows)
         conn.commit()
-    finally:
+    except BaseException:
         conn.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+    else:
+        conn.close()
+    # Default rollback journal leaves no -wal/-shm sidecars after close, so swapping
+    # the single db file is a complete publish.
+    os.replace(tmp_path, db_path)
 
 
 def _fts_phrase(query: str) -> str:

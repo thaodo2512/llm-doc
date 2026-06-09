@@ -22,6 +22,7 @@ TOKENS = FIXTURES / "tokens.json"
 def make_settings(tmp_path: Path, **overrides) -> Settings:
     base = dict(
         doc_root=tmp_path / "curated",
+        docstore_root=tmp_path,
         source_dirs=[str(RAW)],
         bind_host="127.0.0.1",
         bind_port=8080,

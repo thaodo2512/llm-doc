@@ -33,7 +33,7 @@ def build_server(settings: Settings) -> FastMCP:
     mcp = FastMCP(
         name="docs",
         instructions=INSTRUCTIONS,
-        auth=JsonFileTokenVerifier(settings.tokens_file),
+        auth=JsonFileTokenVerifier(settings.tokens_file, settings.groups_file),
     )
     register_tools(mcp, settings)
     return mcp

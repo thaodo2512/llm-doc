@@ -1,7 +1,7 @@
 ---
 name: doc-report
 description: >-
-  Print a concise terminal report of the internal documentation served by the
+  Print a concise terminal report of the documentation served by the
   docs MCP server — an inventory of which documents exist, grouped by area and
   type, each with a one-line summary. Use when the user asks to list, report on,
   inventory, or get an overview of the docs in the terminal (e.g. "what docs do

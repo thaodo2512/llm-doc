@@ -1,4 +1,9 @@
-# syntax=docker/dockerfile:1
+# No `# syntax=` directive on purpose: this Dockerfile uses only built-in frontend
+# features, so BuildKit's bundled frontend builds it WITHOUT fetching docker/dockerfile
+# from Docker Hub — one fewer network dependency on a locked-down or slow-registry host
+# (that fetch fails first with a TLS handshake timeout when Docker Hub is unreachable).
+# Note: the base image, apt, and pip still need network; only the ML models under
+# models/ are vendored for offline use.
 #
 # Two targets from one file (build for x86 with: --platform linux/amd64):
 #   * server  — slim runtime you deploy/expose (fastmcp + ripgrep, no ML).

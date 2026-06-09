@@ -277,6 +277,47 @@ Manage groups and verify/audit access:
 ./docmcp.sh audit                            # recent token create/revoke/rotate events
 ```
 
+### Recipes: group tokens, write access, group membership
+
+A token's effective scope is **its explicit read prefixes + every prefix of every group it
+names**, plus an optional **`--write`** (portal upload) scope — all combinable on one token and
+reloaded live. The three most common tasks:
+
+**1. Mint a token from a group ("group token").** Define the group once, then issue tokens that
+inherit its prefixes — edit the group later and every token that names it follows automatically:
+
+```bash
+./docmcp.sh group firmware /team-fw /team-fw-shared    # define/extend the group (read prefixes)
+./docmcp.sh token bob --group firmware                 # bob inherits /team-fw + /team-fw-shared
+./docmcp.sh token bob --group firmware --group public  # several groups → union of their prefixes
+./docmcp.sh token bob /public --group firmware         # mix explicit prefixes with a group
+```
+
+**2. Grant write (upload) access to a user.** `--write <prefix>` adds an upload scope on top of
+read scope; repeat it for several folders. Uploads land in `raw/` only (ingested by the
+`schedule`); `docs-mcp` stays read-only. The write scope is usable only once the portal is enabled
+(next section):
+
+```bash
+./docmcp.sh token alice /team-fw --write /team-fw            # read + write /team-fw
+./docmcp.sh token alice --group firmware --write /team-fw    # group read + write
+./docmcp.sh token alice /docs --write /docs --write /drafts  # write to two folders
+```
+
+**3. Add a user to a group.** Membership is expressed on the user's *token* — a member is anyone
+holding a token that names the group. `token-rotate` keeps the *same* scope (so it can't add a
+group); instead revoke the old token, then mint a fresh one that names the group:
+
+```bash
+./docmcp.sh token-rm carol                        # revoke carol's old token(s) first — token-rm <user> = ALL of them
+./docmcp.sh token carol /public --group firmware  # mint fresh: /public + 'firmware' membership
+./docmcp.sh access-tree                           # verify: groups → folders → members
+./docmcp.sh access-check carol /team-fw/x.md      # → ALLOW  (firmware ⇒ /team-fw)
+```
+
+Prefer editing `tokens.json` directly? Add the name to that token's `"groups": [ … ]` array and
+save the file **atomically** (temp + `mv`); the server reloads on its mtime change.
+
 ### Optional: upload/manage portal
 
 A browser portal lets non-technical teammates **publish docs without git**. It is a separate

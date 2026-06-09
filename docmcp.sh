@@ -1164,8 +1164,11 @@ EOF
 Description=docmcp re-ingest schedule — OnCalendar=$oncal ($ROOT)
 
 [Timer]
+# No Persistent=true: a daily/weekly OnCalendar whose time already passed today
+# would otherwise fire an immediate "catch-up" ingest on install — a surprising,
+# silent (journal-only) heavy run, and unlike the cron backend. Match cron: fire
+# only at the scheduled time.
 OnCalendar=$oncal
-Persistent=true
 Unit=${id}.service
 
 [Install]

@@ -67,9 +67,14 @@ dep_detect
 dep_bootstrap
 
 # --- prompts (skipped when the flag already set the value, or under --yes) ---
+PORT_VETTED=""
 if [ -z "$PORT" ]; then
-  if [ -n "$ASSUME_YES" ]; then PORT=8080; else PORT="$(ask "Local port to publish on" "8080" v_port)"; fi
+  if [ -n "$ASSUME_YES" ]; then PORT=8080
+  else PORT="$(ask_free_port "Local port to publish on" "8080")"; PORT_VETTED=1; fi
 fi
+# A --port flag or the --yes default was never vetted by the interactive free-port loop:
+# check it's free now and fail fast with a suggestion (so we don't bind-fail at compose).
+[ -n "$PORT_VETTED" ] || require_port_free "$PORT" "port"
 if [ -z "$DOCS" ] && [ -z "$ASSUME_YES" ]; then
   DOCS="$(ask "Docs file/dir to ingest now (blank = skip)" "" v_path)"
 fi

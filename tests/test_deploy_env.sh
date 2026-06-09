@@ -4,6 +4,7 @@
 # profile->env matrix (profile_local/vpn/https). Pure bash, no Docker, runnable on
 # macOS bash 3.2. Run:  bash tests/test_deploy_env.sh
 #
+# shellcheck disable=SC1090,SC2034  # dynamic .env source + globals read by the sourced lib
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -154,6 +155,62 @@ vcheck "v_cron accepts 2h" ok v_cron "2h"
 vcheck "v_cron rejects 48h (>23)" bad v_cron "48h"
 vcheck "v_cron accepts daily" ok v_cron "daily"
 vcheck "v_cron accepts a 5-field expr" ok v_cron "*/15 * * * *"
+
+# --- availability pre-flight (is a value FREE/USABLE now, not just well-formed) ----
+# rc_of FN ARGS...  -> echoes the function's 3-way return code without tripping set -e
+rc_of() { local rc; "$@" >/dev/null 2>&1 && rc=0 || rc=$?; printf '%s' "$rc"; }
+
+# v_path now also requires readability (a real usability check, not just existence)
+vcheck "v_path accepts a readable file" ok v_path "$DEP_ENV"
+vcheck "v_path rejects a missing path"  bad v_path "$work/no-such-thing-xyz"
+vcheck "v_path accepts empty (= skip)"  ok v_path ""
+
+if command -v python3 >/dev/null 2>&1; then
+  # Start a REAL listener on an OS-assigned free loopback port; write the port to a file.
+  pf="$work/busyport"
+  python3 -c 'import socket,sys,time
+s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(1)
+open(sys.argv[1],"w").write(str(s.getsockname()[1]))
+time.sleep(15)' "$pf" &
+  lp=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -s "$pf" ] && break; sleep 0.2; done
+  busyport="$(cat "$pf" 2>/dev/null || true)"
+  if [ -n "$busyport" ]; then
+    eq "port_busy detects a live listener" "$(rc_of port_busy "$busyport")" "0"
+    DEP_OWN_PORTS=""
+    eq "_port_ok_for_deploy rejects a foreign-held port" "$(rc_of _port_ok_for_deploy "$busyport")" "1"
+    DEP_OWN_PORTS="$busyport"
+    eq "_port_ok_for_deploy allows our own published port" "$(rc_of _port_ok_for_deploy "$busyport")" "0"
+    DEP_OWN_PORTS=""
+    sug="$(suggest_free_port "$busyport")"
+    if [ "$sug" != "$busyport" ]; then ok "suggest_free_port skips the busy port"
+    else printf 'FAIL suggest_free_port returned the busy port\n'; fail=1; fi
+  else
+    printf 'skip  live-listener tests (could not start a listener)\n'
+  fi
+  kill "$lp" 2>/dev/null || true; wait "$lp" 2>/dev/null || true
+  if [ -n "$busyport" ]; then
+    for _ in 1 2 3 4 5; do [ "$(rc_of port_busy "$busyport")" = "0" ] && sleep 0.2 || break; done
+    eq "port_busy reports a released port free" "$(rc_of port_busy "$busyport")" "1"
+  fi
+else
+  printf 'skip  port availability tests (no python3)\n'
+fi
+
+# ip_is_local: loopback/all-interfaces always local; a TEST-NET-3 addr is not (or unknown)
+eq "ip_is_local accepts 127.0.0.1" "$(rc_of ip_is_local 127.0.0.1)" "0"
+eq "ip_is_local accepts 0.0.0.0"   "$(rc_of ip_is_local 0.0.0.0)"   "0"
+case "$(rc_of ip_is_local 203.0.113.7)" in
+  1|2) ok "ip_is_local: non-local IP is rejected/uncertain" ;;
+  *)   printf 'FAIL ip_is_local should be 1 or 2 for a non-local IP\n'; fail=1 ;;
+esac
+
+# domain_resolves: a name under the reserved .invalid TLD must never resolve (1), or 2 if
+# no resolver tool exists. (We avoid asserting a positive — that varies by getent vs dig.)
+case "$(rc_of domain_resolves "no-such-host-$$.invalid")" in
+  1|2) ok "domain_resolves: .invalid does not resolve" ;;
+  *)   printf 'FAIL domain_resolves should be 1 or 2 for a .invalid name\n'; fail=1 ;;
+esac
 
 echo
 if [ "$fail" = 0 ]; then echo "ALL DEPLOY-ENV TESTS PASSED"; else echo "SOME TESTS FAILED"; exit 1; fi

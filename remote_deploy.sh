@@ -98,13 +98,19 @@ dep_bootstrap
 # --- profile-specific values ---
 if [ "$PROFILE" = vpn ]; then
   if [ -z "$IP" ]; then IP="$(ask "This server's IP (clients connect to it)" "" v_ip)"; fi
+  warn_ip_unroutable "$IP"                       # soft: flag a typo'd IP (NAT/public is fine)
+  BIND_VETTED=""
   if [ -z "$BIND" ]; then
     if [ -n "$ASSUME_YES" ]; then BIND=0.0.0.0
-    else BIND="$(ask "Bind interface (0.0.0.0 = all; or pin to the VPN IP)" "0.0.0.0" v_ip)"; fi
+    else BIND="$(ask_bind "Bind interface (0.0.0.0 = all; or pin to the VPN IP)" "0.0.0.0")"; BIND_VETTED=1; fi
   fi
+  [ -n "$BIND_VETTED" ] || require_bind_local "$BIND"   # a --bind/--yes value the loop never vetted
+  PORT_VETTED=""
   if [ -z "$PORT" ]; then
-    if [ -n "$ASSUME_YES" ]; then PORT=80; else PORT="$(ask "HTTP port clients will use" "80" v_port)"; fi
+    if [ -n "$ASSUME_YES" ]; then PORT=80
+    else PORT="$(ask_free_port "HTTP port clients will use" "80")"; PORT_VETTED=1; fi
   fi
+  [ -n "$PORT_VETTED" ] || require_port_free "$PORT" "port"
   if [ -z "$ASSUME_YES" ]; then
     ask_yesno "Bearer tokens travel UNENCRYPTED on this profile — trusted/VPN network only. Continue?" "Y" \
       || die "aborted — use the HTTPS profile for an untrusted network"
@@ -114,7 +120,7 @@ else  # https
   if [ -n "$BIND" ] || [ -n "$PORT" ]; then
     warn "--bind/--port are ignored under HTTPS (Caddy serves on 80/443; use HTTPS_PORT in .env to change 443)."
   fi
-  warn "HTTPS via ACME needs ${DOMAIN_ARG} resolvable + reachable on ports 80/443 (or a DNS-01 setup)."
+  preflight_domain "$DOMAIN_ARG"   # checks the name actually resolves; notes 80/443 reachability
 fi
 
 # --- common optional prompts ---

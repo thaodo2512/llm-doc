@@ -478,9 +478,11 @@ Tips for good answers:
 - You only ever see docs your **token's prefixes** allow — `list_docs` is pre-filtered.
 
 If you installed the bundled **skills** (`clients/skills/`), these trigger automatically:
-`docs` (find/cite), `doc-report` (a terminal inventory — *"what docs do we have?"*), and
-`doc-html-report` (a shareable HTML report). Writing docs that retrieve well is its own
-skill — see **[`docs/AUTHORING.md`](docs/AUTHORING.md)**.
+`docs` (find/cite), `doc-find` (locate a doc/section from a *fuzzy, half-remembered*
+description — *"I remember something about multipart transfer…"* — by expanding it into
+the literal terms the corpus uses), `doc-report` (a terminal inventory — *"what docs do we
+have?"*), and `doc-html-report` (a shareable HTML report). Writing docs that retrieve well
+is its own skill — see **[`docs/AUTHORING.md`](docs/AUTHORING.md)**.
 
 ## Configuration
 

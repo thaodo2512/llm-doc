@@ -75,6 +75,29 @@ is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" = "true" ]
 }
 
+# Make an auth change (tokens.json / groups.json) take effect in the running containers.
+# Both files are bind-mounted into docs-mcp AND the portal as SINGLE FILES, and our writes
+# are atomic (temp + os.replace), which gives the host file a NEW inode. A single-file bind
+# mount stays pinned to the inode present at container start, so the container keeps reading
+# the OLD file until it is restarted — and the in-process mtime live-reload can never fire,
+# because the stale inode's mtime never changes. (Mounting the file is the only option: you
+# cannot create a mountpoint inside the :ro docstore volume.) So an auth change only lands
+# after a restart. We restart BOTH services: docs-mcp (read RBAC) and, when up, the portal
+# (login + write RBAC) — otherwise a freshly minted token gets "Invalid or expired token" at
+# the portal until the next restart. Messages go to stderr so a `$(... token ...)` capture
+# still gets only the token on stdout.
+reload_auth_services() {
+  local what="${1:-auth change}"
+  if is_running docs-mcp; then
+    dc restart docs-mcp >/dev/null && info "reloaded the running server (${what} is live)" >&2
+  else
+    warn "start/restart the server for the ${what} to take effect: ./docmcp.sh serve"
+  fi
+  if is_running portal; then
+    dc restart portal >/dev/null && info "reloaded the running portal (${what} is live)" >&2
+  fi
+}
+
 # Block until qdrant accepts connections (vector mode) so ingest doesn't race it.
 wait_for_qdrant() {
   server_image_exists || return 0
@@ -398,11 +421,7 @@ PY
   printf '%s\n' "$tok"
   # Notes go to stderr so a caller capturing `$(... token ...)` gets only the token.
   if [ -n "$ttl" ]; then info "expires in ${expires_spec}" >&2; else info "non-expiring token" >&2; fi
-  if is_running docs-mcp; then
-    dc restart docs-mcp >/dev/null && info "reloaded the running server (token is active)" >&2
-  else
-    warn "start/restart the server for the new token to take effect: ./docmcp.sh serve"
-  fi
+  reload_auth_services "token"
 }
 
 # token-list [--expired]  — show configured tokens with the secret REDACTED
@@ -518,11 +537,7 @@ PY
   done <<EOF
 $removed
 EOF
-  if is_running docs-mcp; then
-    dc restart docs-mcp >/dev/null && info "reloaded the running server (revocation is live)"
-  else
-    warn "start/restart the server for the revocation to take effect: ./docmcp.sh serve"
-  fi
+  reload_auth_services "revocation"
 }
 
 # group <name> <prefix> [<prefix> ...]  — define/update an RBAC group (a named set of
@@ -557,7 +572,8 @@ except BaseException:
     os.unlink(tmp); raise
 print("group %s = %s" % (name, prefixes))
 PY
-  info "group '$name' saved. Tokens referencing it pick up the change on the next request."
+  info "group '$name' saved."
+  reload_auth_services "group change"
 }
 
 # group-list  — show the defined groups and their prefixes.
@@ -598,6 +614,7 @@ except BaseException:
     os.unlink(tmp); raise
 print("removed group %s" % name)
 PY
+  reload_auth_services "group change"
 }
 
 # token-rotate <user>  — mint a fresh token carrying the user's existing scope
@@ -660,7 +677,7 @@ PY
 )" || die "rotate failed — no tokens for '$user'? (see ./docmcp.sh token-list)"
   printf '%s\n' "$newtok"
   info "rotated $user: new token minted, previous token(s) revoked" >&2
-  if is_running docs-mcp; then dc restart docs-mcp >/dev/null && info "reloaded the running server" >&2; fi
+  reload_auth_services "rotation"
 }
 
 # access-check <user> <logical-path>  — does the user's effective scope allow the path?

@@ -1,9 +1,13 @@
 ---
 name: docs
 description: >-
-  Retrieve project documentation. Use when the user asks about APIs, specs,
-  runbooks, configs, or "how do we do X here". Trigger words: docs, our spec,
-  runbook, design doc.
+  Answer a SPECIFIC documentation question by finding and citing the exact
+  passage — APIs, specs, config keys, error strings, runbook steps, "how do we
+  do X here". Use for targeted lookups where the user can name concrete terms.
+  NOT for: an inventory/overview of what exists ("what docs do we have" -> use
+  doc-report), building or exporting an HTML report/bundle ("make a docs report"
+  -> use doc-html-report), or locating something from a vague, half-remembered
+  description ("I remember something about..." -> use doc-find).
 ---
 1. Call list_docs to see the index.
 2. Call search_docs with specific keywords (symbols, config keys, exact terms).

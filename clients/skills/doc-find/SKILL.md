@@ -31,12 +31,15 @@ query and give up. You only ever see docs the caller's token allows.
 5. Merge and dedupe the hits; rank by how many distinct queries landed on the same
    doc/section and by score. Pick the top 1–3 candidate locations.
 6. `read_doc` a focused line range around each top hit to CONFIRM it matches the
-   description and to pin the exact heading/section. If nothing matches, refine the
-   terms (synonyms, broader or narrower) and repeat steps 4–6 up to ~3 rounds.
-7. Report: the doc `path`, the section/heading, and `path:line`, plus a one-line
-   "why this matches". Always cite. If the user asked you to fix or act on it,
-   work from the CONFIRMED text you just read — never from memory — and quote the
-   exact lines.
+   description and to pin the exact heading/section. (`read_doc` returns raw
+   `content` with NO line numbers — use it only to confirm and quote the section,
+   not to derive a line.) If nothing matches, refine the terms (synonyms, broader
+   or narrower) and repeat steps 4–6 up to ~3 rounds.
+7. Report: the doc `path`, the section/heading, and the line number **from the
+   matching `search_docs` hit** (cite `path:line` using that hit's `line` — never
+   invent one from `read_doc`), plus a one-line "why this matches". Always cite. If
+   the user asked you to fix or act on it, work from the CONFIRMED text you just
+   read — never from memory — and quote the exact section.
 8. If nothing matches confidently after refining, say so plainly, list the closest
    candidate paths, and suggest the exact terms to try next (or that the operator
    enable semantic search for concept-level recall).

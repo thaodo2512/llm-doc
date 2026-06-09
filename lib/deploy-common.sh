@@ -538,10 +538,11 @@ dep_schedule() {
   [ -n "$spec" ] || return 0
   case "$spec" in off) return 0 ;; esac
   if [ -n "${DRY_RUN:-}" ]; then dep_log "would run: ./docmcp.sh schedule $spec"; return 0; fi
-  # Non-fatal, and in a SUBSHELL: cmd_schedule reports errors with die()->exit (e.g. crontab
-  # absent on a minimal server, or a flag value that bypassed v_cron). A plain `|| warn`
-  # cannot catch an exit from a sourced function, so the wizard would abort AFTER a live
-  # serve; the subshell turns that exit into a catchable status.
+  # Non-fatal, and in a SUBSHELL: cmd_schedule reports errors with die()->exit. It now falls
+  # back to a systemd timer when crontab is absent, so the common minimal-server case succeeds;
+  # but it can still die (e.g. systemd present but not run as root, or a flag value that bypassed
+  # v_cron). A plain `|| warn` cannot catch an exit from a sourced function, so the wizard would
+  # abort AFTER a live serve; the subshell turns that exit into a catchable status.
   ( cmd_schedule "$spec" ) || warn "could not set the '$spec' schedule — set one later: ./docmcp.sh schedule <spec>"
 }
 

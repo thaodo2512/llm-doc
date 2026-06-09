@@ -1064,35 +1064,65 @@ cmd_backup() {
   info "raw/ is backed up via Git LFS (git push); curated store + index are rebuildable (./docmcp.sh ingest) — restore steps in RUNBOOK.md"
 }
 
-# schedule [<spec>|off]  — run `ingest` on a cron schedule. <spec> is one of:
+# schedule [<spec>|off]  — run `ingest` on a schedule. <spec> is one of:
 #   30m | 2h                 every N minutes (1-59) or hours (1-23)
 #   hourly | daily | weekly  presets
 #   "*/15 * * * *"           a raw 5-field cron expression (quote it)
-# No arg shows the current schedule; `off` removes it. Idempotent: re-running
-# replaces our entry and leaves any other crontab lines untouched.
+# Backend: the host `crontab` when present; otherwise a systemd timer (no `cron`
+# package needed) on a systemd host run as root. No arg shows the current
+# schedule; `off` removes it. Idempotent: re-running replaces our entry and
+# leaves any other crontab lines / units untouched.
 _cron_marker() { printf '# docmcp-ingest:%s' "$ROOT"; }
+# A stable, per-deploy systemd unit name so two checkouts on one host don't
+# collide (mirrors the cron marker, which is namespaced by $ROOT).
+_sched_id() { printf 'docmcp-ingest-%s' "$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)"; }
 
-cmd_schedule() {
-  command -v crontab >/dev/null 2>&1 || die "'crontab' isn't available on this system"
-  local spec="${1:-}"
+# Translate a spec to "<cron-expr>|<OnCalendar>". The OnCalendar half is empty
+# for a raw 5-field cron expression — only the crontab backend can run those.
+# Kept pure (echoes; no side effects) so it is unit-testable.
+_sched_translate() {
+  local spec="$1" n
   case "$spec" in
-    ""|status|show)  _cron_status; return ;;
-    off|remove|stop) _cron_remove; return ;;
-  esac
-  local cron_expr n
-  case "$spec" in
-    hourly) cron_expr="0 * * * *" ;;
-    daily)  cron_expr="0 2 * * *" ;;
-    weekly) cron_expr="0 2 * * 0" ;;
+    hourly) printf '0 * * * *|*-*-* *:00:00' ;;
+    daily)  printf '0 2 * * *|*-*-* 02:00:00' ;;
+    weekly) printf '0 2 * * 0|Sun *-*-* 02:00:00' ;;
     *m) n="${spec%m}"; { [ "$n" -ge 1 ] && [ "$n" -le 59 ]; } 2>/dev/null \
-          || die "minutes must be 1-59: $spec"; cron_expr="*/$n * * * *" ;;
+          || die "minutes must be 1-59: $spec"; printf '*/%s * * * *|*:0/%s' "$n" "$n" ;;
     *h) n="${spec%h}"; { [ "$n" -ge 1 ] && [ "$n" -le 23 ]; } 2>/dev/null \
-          || die "hours must be 1-23: $spec"; cron_expr="0 */$n * * *" ;;
+          || die "hours must be 1-23: $spec"; printf '0 */%s * * *|0/%s:00' "$n" "$n" ;;
     *)  [ "$(printf '%s' "$spec" | awk '{print NF}')" = 5 ] \
           || die "usage: ./docmcp.sh schedule <Nm|Nh|hourly|daily|weekly|'m h dom mon dow'|off>"
-        cron_expr="$spec" ;;
+        printf '%s|' "$spec" ;;
   esac
-  _cron_install "$cron_expr"
+}
+
+cmd_schedule() {
+  local spec="${1:-}"
+  case "$spec" in
+    ""|status|show)  _sched_status; return ;;
+    off|remove|stop) _sched_remove; return ;;
+  esac
+  local t cron_expr oncal
+  t="$(_sched_translate "$spec")"   # die() inside propagates: set -e aborts on a failed $()
+  cron_expr="${t%%|*}"; oncal="${t#*|}"
+  _sched_install "$cron_expr" "$oncal"
+}
+
+# Pick a backend: host crontab first (unchanged behavior when present), else a
+# systemd timer, else fail with actionable guidance.
+_sched_install() {
+  local cron_expr="$1" oncal="$2"
+  if command -v crontab >/dev/null 2>&1; then
+    _cron_install "$cron_expr"; return
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    [ "$(id -u)" = 0 ] \
+      || die "no 'crontab' here, and writing a systemd timer needs root — re-run with sudo, or install cron (e.g. apt-get install -y cron)"
+    [ -n "$oncal" ] \
+      || die "the systemd-timer fallback supports presets only (daily|hourly|weekly|Nm|Nh); for a raw cron expression install cron (e.g. apt-get install -y cron) and retry"
+    _systemd_install "$oncal" "$cron_expr"; return
+  fi
+  die "no scheduler available — install cron (e.g. apt-get install -y cron), or use a systemd host as root"
 }
 
 _cron_install() {
@@ -1109,22 +1139,86 @@ _cron_install() {
   warn "fires only while Docker is running (on a Mac, Docker Desktop must be open)"
 }
 
-_cron_remove() {
-  local marker current kept
-  marker="$(_cron_marker)"
-  current="$(crontab -l 2>/dev/null || true)"
-  printf '%s\n' "$current" | grep -qF "$marker" || { info "no docmcp schedule was set"; return 0; }
-  kept="$(printf '%s\n' "$current" | grep -vF "$marker" || true)"
-  if [ -n "$kept" ]; then printf '%s\n' "$kept" | crontab -; else crontab -r 2>/dev/null || true; fi
-  info "schedule removed"
+# systemd fallback: a oneshot .service + a .timer, enabled now. Output is
+# captured by the journal (journalctl -u <unit>) — no `cron` package required.
+_systemd_install() {
+  local oncal="$1" cron_expr="$2" id svc tmr dockerdir
+  id="$(_sched_id)"
+  svc="/etc/systemd/system/${id}.service"
+  tmr="/etc/systemd/system/${id}.timer"
+  dockerdir="$(dirname "$(command -v docker)")"
+  cat > "$svc" <<EOF
+[Unit]
+Description=docmcp re-ingest ($ROOT)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$ROOT
+Environment=PATH=$dockerdir:/usr/local/bin:/usr/bin:/bin
+ExecStart=$ROOT/docmcp.sh ingest
+EOF
+  cat > "$tmr" <<EOF
+[Unit]
+Description=docmcp re-ingest schedule — OnCalendar=$oncal ($ROOT)
+
+[Timer]
+OnCalendar=$oncal
+Persistent=true
+Unit=${id}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "${id}.timer" >/dev/null 2>&1 \
+    || die "wrote the units but failed to enable ${id}.timer — inspect: systemctl status ${id}.timer"
+  info "scheduled (systemd timer) — '$cron_expr' → OnCalendar='$oncal' runs ${C_B}./docmcp.sh ingest${C_0}"
+  info "  journal: journalctl -u ${id}.service   •   next run: systemctl list-timers ${id}.timer"
+  info "  show: ./docmcp.sh schedule   •   remove: ./docmcp.sh schedule off"
+  warn "fires only while Docker is running"
 }
 
-_cron_status() {
-  local marker line
-  marker="$(_cron_marker)"
-  line="$(crontab -l 2>/dev/null | grep -F "$marker" || true)"
-  if [ -n "$line" ]; then info "current schedule:"; printf '  %s\n' "$line"
-  else info "no schedule set — e.g.: ./docmcp.sh schedule 30m   (or hourly | daily | 'm h dom mon dow')"; fi
+# Remove whatever backend(s) hold a docmcp schedule for THIS deploy.
+_sched_remove() {
+  local removed=0 marker current kept id
+  if command -v crontab >/dev/null 2>&1; then
+    marker="$(_cron_marker)"
+    current="$(crontab -l 2>/dev/null || true)"
+    if printf '%s\n' "$current" | grep -qF "$marker"; then
+      kept="$(printf '%s\n' "$current" | grep -vF "$marker" || true)"
+      if [ -n "$kept" ]; then printf '%s\n' "$kept" | crontab -; else crontab -r 2>/dev/null || true; fi
+      info "schedule removed (cron)"; removed=1
+    fi
+  fi
+  id="$(_sched_id)"
+  if [ -f "/etc/systemd/system/${id}.timer" ] || [ -f "/etc/systemd/system/${id}.service" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl disable --now "${id}.timer" >/dev/null 2>&1 || true
+    fi
+    rm -f "/etc/systemd/system/${id}.timer" "/etc/systemd/system/${id}.service" 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+    info "schedule removed (systemd timer ${id})"; removed=1
+  fi
+  if [ "$removed" != 1 ]; then info "no docmcp schedule was set"; fi
+}
+
+# Show whichever backend currently holds a schedule for THIS deploy.
+_sched_status() {
+  local found=0 marker line id
+  if command -v crontab >/dev/null 2>&1; then
+    marker="$(_cron_marker)"
+    line="$(crontab -l 2>/dev/null | grep -F "$marker" || true)"
+    if [ -n "$line" ]; then info "current schedule (cron):"; printf '  %s\n' "$line"; found=1; fi
+  fi
+  id="$(_sched_id)"
+  if [ -f "/etc/systemd/system/${id}.timer" ]; then
+    info "current schedule (systemd timer ${id}):"
+    if command -v systemctl >/dev/null 2>&1; then systemctl list-timers "${id}.timer" --no-pager 2>/dev/null || true; fi
+    found=1
+  fi
+  if [ "$found" != 1 ]; then info "no schedule set — e.g.: ./docmcp.sh schedule 30m   (or hourly | daily | 'm h dom mon dow')"; fi
 }
 
 usage() {
@@ -1151,7 +1245,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}logs${C_0}                      follow the server + proxy logs
   ${C_B}stop${C_0}                      stop services (your ingested store is kept)
   ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
-  ${C_B}schedule${C_0} <Nm|Nh|daily|off> run 'ingest' on a cron schedule (no arg shows it)
+  ${C_B}schedule${C_0} <Nm|Nh|daily|off> run 'ingest' on a schedule — cron, or a systemd timer if cron is absent (no arg shows it)
 
 First run:
   1. Install Docker Desktop (or Docker Engine + Compose).

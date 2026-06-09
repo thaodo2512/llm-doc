@@ -98,6 +98,60 @@ reload_auth_services() {
   fi
 }
 
+# Non-blocking sanity check for READ prefixes (token positional args / group prefixes):
+# warn about any that match NO document in the current index — almost always a typo
+# (missing leading slash, wrong case). It NEVER blocks and NEVER changes exit status:
+# folders are legitimately granted before they hold content, and the index may not be
+# built yet. WRITE (--write) prefixes are intentionally exempt — granting an upload
+# target for a folder that does not exist yet is a normal workflow. Uses the SAME
+# segment-aware rbac.is_allowed the server enforces, so "matches nothing" here means
+# "grants nothing" there. All output goes to stderr so a `$(... token ...)` capture is
+# unaffected.
+warn_unknown_prefixes() {
+  [ "$#" -ge 1 ] || return 0
+  server_image_exists || return 0
+  docker volume inspect "$DOCSTORE_VOL" >/dev/null 2>&1 || {
+    info "skipped prefix check — no curated store yet (run ./docmcp.sh ingest)" >&2; return 0; }
+  local out
+  out="$(docker run --rm -i -v "$DOCSTORE_VOL:/srv/docs:ro" "$SERVER_IMAGE" \
+    python - "$@" <<'PY'
+import json, os, sys
+try:
+    from docmcp.rbac import is_allowed                # authoritative, segment-aware
+except Exception:                                     # fallback mirrors rbac.is_allowed
+    import posixpath
+    def is_allowed(path, prefixes):
+        p = posixpath.normpath("/" + path.strip().strip("/"))
+        for pref in prefixes:
+            if pref.strip() in ("", "/"):
+                return True
+            q = posixpath.normpath("/" + pref.strip().strip("/"))
+            if p == q or p.startswith(q + "/"):
+                return True
+        return False
+ij = "/srv/docs/index.json"
+docs = json.load(open(ij)) if os.path.exists(ij) else []
+if not docs:
+    print("__EMPTY__"); sys.exit(0)
+paths = [d.get("path", "") for d in docs if isinstance(d, dict)]
+for pref in sys.argv[1:]:
+    if not any(is_allowed(p, [pref]) for p in paths):
+        print(pref)
+PY
+)" || return 0
+  if [ "$out" = "__EMPTY__" ]; then
+    info "skipped prefix check — index is empty (run ./docmcp.sh ingest)" >&2; return 0
+  fi
+  [ -n "$out" ] || return 0
+  local _p
+  while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    warn "read prefix '$_p' matches no document in the current index — check for a typo (leading slash, case); ignore if it is a folder you have not ingested yet"
+  done <<EOF
+$out
+EOF
+}
+
 # Block until qdrant accepts connections (vector mode) so ingest doesn't race it.
 wait_for_qdrant() {
   server_image_exists || return 0
@@ -336,6 +390,7 @@ cmd_token() {
       [ -n "$(printf '%s' "$_p" | tr -d '/[:space:]')" ] \
         || die "a bare '/' grants the WHOLE corpus — use --all to do that explicitly"
     done
+    warn_unknown_prefixes "$@"   # non-blocking typo guard for read prefixes (skips --all)
   fi
 
   # Translate the spec into a TTL in seconds (empty string => non-expiring).
@@ -554,6 +609,7 @@ cmd_group() {
     [ -n "$(printf '%s' "$_p" | tr -d '/[:space:]')" ] \
       || die "a bare '/' grants the WHOLE corpus — a group cannot hold it; use 'token <user> --all' for break-glass"
   done
+  warn_unknown_prefixes "$@"   # non-blocking typo guard for the group's read prefixes
   docker run --rm -i --user "$(id -u):$(id -g)" -v "$ROOT:/work" "$SERVER_IMAGE" \
     python - /work/groups.json "$name" "$@" <<'PY'
 import fcntl, json, os, sys, tempfile

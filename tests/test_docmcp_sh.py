@@ -72,3 +72,29 @@ def test_serve_portal_allows_tls_domain():
     body = _body("cmd_serve")
     assert "portal_tls=1" in body  # a real DOMAIN sets the TLS path
     assert "ALLOW_PLAINTEXT_PORTAL" in body  # plaintext remains an explicit alternative
+
+
+def test_auth_mutations_reload_portal_not_just_server():
+    # Stale single-file bind mount: tokens.json/groups.json are written atomically
+    # (os.replace swaps the inode), so a single-file bind mount keeps reading the OLD file
+    # until restarted. Both docs-mcp AND the portal must be restarted or the portal
+    # authenticates a stale token set ("Invalid or expired token" on a fresh token).
+    helper = _body("reload_auth_services")
+    assert "dc restart docs-mcp" in helper
+    assert "dc restart portal" in helper and "is_running portal" in helper
+    # every command that mutates tokens.json / groups.json must route through the helper
+    for cmd in ("cmd_token", "cmd_token_rm", "cmd_token_rotate", "cmd_group", "cmd_group_rm"):
+        assert "reload_auth_services" in _body(cmd), cmd
+
+
+def test_token_and_group_warn_on_unknown_read_prefix():
+    # Non-blocking typo guard: a read/group prefix that matches NO indexed document is
+    # almost always a typo (wrong case, partial segment). It must WARN and still proceed,
+    # use the authoritative segment-aware is_allowed, and skip gracefully on an empty index.
+    helper = _body("warn_unknown_prefixes")
+    assert '[ "$#" -ge 1 ] || return 0' in helper  # never blocks; no scope → no-op
+    assert "is_allowed" in helper  # authoritative, matches what the server enforces
+    assert "__EMPTY__" in helper  # graceful skip when the index is unbuilt/empty
+    assert "matches no document" in helper  # the warning text
+    assert 'warn_unknown_prefixes "$@"' in _body("cmd_token")  # read positionals
+    assert 'warn_unknown_prefixes "$@"' in _body("cmd_group")  # group's read prefixes

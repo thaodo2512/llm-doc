@@ -11,6 +11,12 @@ raw/** filter=lfs diff=lfs merge=lfs -text
 # them with the repo and the build needs no model downloads.
 models/** filter=lfs diff=lfs merge=lfs -text
 
+# ...but an attributes file must NEVER be an LFS pointer: git reads .gitattributes as
+# plain text while checking out, and a pointer makes `git clone` print
+# "https://git-lfs.github.com/spec/v1 is not a valid attribute name". The vendored model
+# dirs ship their own .gitattributes; keep those (and any nested ones) as normal git.
+models/**/.gitattributes !filter !diff !merge text
+
 # --- exceptions: keep these as normal, diffable git ---
 raw/.gitkeep        !filter !diff !merge text
 

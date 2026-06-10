@@ -62,6 +62,14 @@ check_lfs_models() {
     printf '%s\n' "$ptrs" | sed "s,^$ROOT/,  ," >&2
     die "the vendored models above are un-materialized Git LFS pointers. Run 'git lfs install && git lfs pull', then rebuild — otherwise ingestion fails with a JSONDecodeError on PDFs with tables/OCR."
   fi
+  # An empty (0-byte) model file passes the pointer grep above but still makes
+  # Docling's json.loads() die with "Expecting value: line 1 column 1 (char 0)" on
+  # the first PDF — i.e. a partial/aborted `git lfs pull`. Catch it here too.
+  local empties; empties="$(find "$ROOT/models" -type f -empty 2>/dev/null)" || true
+  if [ -n "$empties" ]; then
+    printf '%s\n' "$empties" | sed "s,^$ROOT/,  ," >&2
+    die "the vendored model files above are empty (0 bytes) — a partial Git LFS fetch. Run 'git lfs install && git lfs pull', then rebuild — otherwise ingestion fails with 'JSONDecodeError: Expecting value: line 1 column 1 (char 0)' on every PDF."
+  fi
 }
 
 # Use `image ls -q` (not `image inspect <name>`): under Docker Desktop's containerd

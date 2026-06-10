@@ -65,6 +65,15 @@ RUN if grep -rIl 'git-lfs.github.com/spec' /opt/docling/models >/dev/null 2>&1; 
         grep -rIl 'git-lfs.github.com/spec' /opt/docling/models 2>/dev/null | sed 's,^/opt/docling/models/,  models/,' >&2; \
         exit 1; \
     fi
+# An empty (0-byte) model file passes the pointer grep above but still makes Docling's
+# json.loads() die with "JSONDecodeError: Expecting value: line 1 column 1 (char 0)" on
+# the first PDF (a partial/aborted `git lfs pull`). Fail the build here instead of
+# shipping an image that breaks on every document.
+RUN if find /opt/docling/models -type f -empty | grep -q .; then \
+        echo 'ERROR: models/ contains empty (0-byte) files — Git LFS fetch was incomplete. Run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        find /opt/docling/models -type f -empty | sed 's,^/opt/docling/models/,  models/,' >&2; \
+        exit 1; \
+    fi
 # OpenCV (pulled in by Docling's tableformer model) needs these native libraries
 # at runtime; the slim base lacks them, so `import cv2` fails with
 # "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as

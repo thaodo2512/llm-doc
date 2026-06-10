@@ -12,6 +12,7 @@ so a server-only install (no `[parse]`) still imports the ingest package.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .parsers import Parsed, normalize_text
@@ -161,11 +162,50 @@ def _converter():
     return _CONVERTER
 
 
+def _export_markdown(document) -> str:
+    """Export a Docling document to Markdown, tolerant of Docling's shifting API.
+
+    We want underscores/HTML kept literal so config keys / code symbols stay
+    searchable (e.g. "rollout_strategy" must not become "rollout\\_strategy"). The
+    knobs that control that have churned across Docling releases: ``escape_underscores``
+    / ``escape_html`` exist only in some versions, were renamed in others, and removed
+    in newer ones — calling with a kwarg the installed version does not accept raises
+    ``TypeError`` and fails EVERY document (this has bitten PDF ingest before). So pass
+    only the kwargs the installed signature actually declares, and fall back to a bare
+    export if introspection is defeated — a working (if escaped) export beats a hard
+    failure."""
+    fn = document.export_to_markdown
+    try:
+        import inspect
+
+        accepted = set(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        accepted = set()
+    kwargs = {k: False for k in ("escape_underscores", "escape_html") if k in accepted}
+    try:
+        return fn(**kwargs)
+    except TypeError:
+        # Signature introspection was defeated (e.g. a **kwargs wrapper that still
+        # rejects these names). Bare export always works; underscores may be escaped.
+        return fn()
+
+
 def _parse_document(path: Path, type_: str) -> Parsed:
-    result = _converter().convert(str(path))
-    # Disable markdown escaping so config keys / code symbols stay literally
-    # searchable (e.g. "rollout_strategy" must not become "rollout\_strategy").
-    markdown = result.document.export_to_markdown(escape_underscores=False, escape_html=False)
+    try:
+        result = _converter().convert(str(path))
+        markdown = _export_markdown(result.document)
+    except json.JSONDecodeError as exc:
+        # Docling json.loads() a model config/weights file that is EMPTY or an
+        # un-materialized Git LFS pointer -> "Expecting value: line 1 column 1
+        # (char 0)". This is cryptic and bites every PDF at once; translate it into
+        # the actual operator action. (json.JSONDecodeError subclasses ValueError,
+        # so this never masks a real parse error in the document itself.)
+        raise RuntimeError(
+            f"Docling could not load its models while converting {path.name} "
+            f"({type(exc).__name__}: {exc}). A vendored model file is empty or an "
+            "un-materialized Git LFS pointer. Fix: run 'git lfs install && git lfs pull', "
+            "then rebuild the ingest image ('./docmcp.sh build ingest')."
+        ) from exc
     return Parsed(type_, normalize_text(markdown), ".md")
 
 

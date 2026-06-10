@@ -67,6 +67,20 @@ For deeper diagnosis:
 DOCMCP_INGEST_DEBUG=1 docker compose -p docs-mcp --profile ingest run --rm ingest --full
 ```
 
+**Every PDF fails at once with `JSONDecodeError: Expecting value: line 1 column 1
+(char 0)`?** That is not the PDFs — the vendored Docling models are broken (Git LFS
+pointers, empty, or truncated files; typically a clone without git-lfs or a pull that
+died mid-download). Verify and repair, then rebuild the image that baked them in:
+
+```bash
+./docmcp.sh models --repair       # re-materialize models/ from Git LFS (size-verified)
+./docmcp.sh build ingest          # the OLD image still has the broken copies baked in
+./docmcp.sh ingest --retry-failed
+```
+
+(`build`/`ingest` run this verification automatically and self-repair unless
+`LFS_AUTO_REPAIR=false`; `doctor` reports both the working tree and the baked image.)
+
 ## 3. Revoke a leaked token
 
 ```bash

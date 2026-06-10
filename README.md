@@ -50,6 +50,14 @@ git lfs pull
 **Verify the clone is complete** — do this on every machine, especially servers:
 
 ```bash
+./docmcp.sh models                # checks every models/** file against its committed LFS
+                                  #   pointer (catches pointers, empty AND truncated files)
+./docmcp.sh models --repair       # broken? re-materialize from Git LFS in place
+```
+
+Or by hand:
+
+```bash
 git lfs ls-files | grep ' - '     # MUST print nothing   ( - = pointer, * = real object )
 du -sh models                     # ~530 MB if real; a few KB means pointers only
 head -c 30 models/docling-project--docling-models/config.json; echo
@@ -64,9 +72,12 @@ connection leaves a **partial** pull (some models real, some still pointers) —
 rsync -av --progress models/ user@host:<repo>/models/
 ```
 
-> `./docmcp.sh build`/`ingest` **preflight** this: they refuse to build the ingest image if any
-> `models/**` file is still an LFS pointer, with a clear "run `git lfs pull`" message — so a partial
-> clone fails fast instead of producing a broken ingest.
+> `./docmcp.sh build`/`ingest` **preflight** this: every `models/**` file is verified against the
+> size in its committed LFS pointer (catching pointers, empty files, and truncated downloads), and
+> anything broken is **auto-repaired from Git LFS** before the build (`LFS_AUTO_REPAIR=false` in
+> `.env` makes it a hard stop instead). `ingest` also refuses to run against an image that baked in
+> broken models, and `./docmcp.sh doctor` reports both — so a partial clone fails fast (or heals
+> itself) instead of producing a broken ingest.
 
 ## Quick start (Docker + `./docmcp.sh`)
 

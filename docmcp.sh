@@ -14,6 +14,7 @@ cd "$ROOT"
 COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
 PROJECT="docs-mcp"                 # compose `name:` — prefixes the network/volumes
 SERVER_IMAGE="docs-mcp:server"
+INGEST_IMAGE="docs-mcp:ingest"     # heavy build-path image (bakes models/ at build time)
 NET="${PROJECT}_default"           # compose default network
 DOCSTORE_VOL="${PROJECT}_docstore" # named volume holding the curated store + index
 
@@ -51,31 +52,146 @@ load_env() { if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi; }
 
 is_true() { case "${1:-}" in true|TRUE|True|1|yes|on) return 0;; *) return 1;; esac; }
 
-# Fail fast if any vendored model is still a Git LFS pointer (a clone without
-# `git lfs pull`). The ingest image bakes models/ at build time, so a pointer text
-# file becomes a fake "model config" and Docling dies at ingest with a cryptic
-# JSONDecodeError on PDFs with tables/OCR. Catch it here before the long build.
+# --- vendored Docling models (Git LFS) ---------------------------------------
+# models/ lives in Git LFS and is BAKED into the ingest image at build time.
+# Every recurring "PDF ingest fails with JSONDecodeError: Expecting value: line 1
+# column 1 (char 0)" incident traces back to this directory being broken in one
+# of four ways, none of which Docling surfaces before conversion time:
+#   missing    — checkout without the directory (or it lost its files)
+#   pointer    — cloned without git-lfs installed: git silently checks out the
+#                small pointer TEXT files instead of the weights (no error!)
+#   empty      — a `git lfs pull` that died mid-checkout (ssh-agent had no key,
+#                network drop, Ctrl-C) leaves 0-byte files behind
+#   truncated  — same, but the download stopped partway through a file
+#
+# list_bad_models prints one "reason<TAB>path" line per broken file (empty output
+# = healthy). Inside a git checkout it compares each file's on-disk size against
+# the size recorded in its committed LFS pointer — authoritative, catches all four
+# states. Outside git (tarball copy) it falls back to pointer-signature and
+# empty-file heuristics. The Dockerfile keeps its own pointer/empty guards as a
+# last line of defense for builds that bypass this script.
+list_bad_models() {
+  local dir="$ROOT/models"
+  [ -d "$dir" ] || { printf 'missing\tmodels/ (directory absent)\n'; return 0; }
+  find "$dir" -type f -print -quit 2>/dev/null | grep -q . \
+    || { printf 'missing\tmodels/ (directory has no files)\n'; return 0; }
+  {
+    if command -v git >/dev/null 2>&1 \
+       && git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      local f expected actual
+      while IFS= read -r f; do
+        # The blob git stores for an LFS-tracked file is a small pointer recording
+        # the real content size; files kept OUT of LFS (e.g. nested .gitattributes)
+        # have no "size" line and are skipped.
+        expected="$(git -C "$ROOT" cat-file blob "HEAD:$f" 2>/dev/null \
+                      | awk '/^size [0-9]+$/ {print $2; exit}')" || true
+        [ -n "$expected" ] || continue
+        if [ ! -f "$ROOT/$f" ]; then printf 'missing\t%s\n' "$f"; continue; fi
+        actual="$(wc -c < "$ROOT/$f" | tr -d '[:space:]')"
+        [ "$actual" = "$expected" ] && continue
+        if [ "$actual" = 0 ]; then
+          printf 'empty (0 of %s bytes)\t%s\n' "$expected" "$f"
+        elif head -c 200 "$ROOT/$f" 2>/dev/null | grep -q 'git-lfs.github.com/spec'; then
+          printf 'LFS pointer (not the %s-byte model)\t%s\n' "$expected" "$f"
+        else
+          printf 'truncated (%s of %s bytes)\t%s\n' "$actual" "$expected" "$f"
+        fi
+      done < <(git -C "$ROOT" ls-files -- models/)
+    fi
+    # Heuristics: the only signal outside a git checkout — and they also catch
+    # stray UNtracked files (which the Dockerfile build guard rejects too).
+    grep -rIl 'git-lfs.github.com/spec' "$dir" 2>/dev/null \
+      | sed "s,^$ROOT/,," | awk '{printf "LFS pointer (not materialized)\t%s\n", $0}' || true
+    find "$dir" -type f -empty 2>/dev/null \
+      | sed "s,^$ROOT/,," | awk '{printf "empty (0 bytes)\t%s\n", $0}' || true
+  } | awk -F'\t' '!seen[$2]++'   # git check is richer; drop duplicate heuristic hits
+}
+
+# Re-materialize broken vendored models in place, from Git LFS:
+#   configure filters — a clone made without git-lfs has NO smudge filter in
+#                       .git/config (the silent way pointers end up on disk)
+#   lfs fetch         — download objects missing from .git/lfs (models/ only,
+#                       so a repair never burns quota on the raw/ corpus)
+#   rm + git checkout — delete the broken working copies, then restore them
+#                       through the smudge filter. The rm matters: a pointer
+#                       file on disk is byte-identical to the committed blob, so
+#                       git treats it as CLEAN and a bare checkout would skip it.
+# Returns non-zero (with the cause classified: ssh auth vs LFS bandwidth quota)
+# when repair cannot run or did not work; callers re-verify with list_bad_models.
+repair_models() {
+  if ! command -v git >/dev/null 2>&1 \
+     || ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    warn "models/ is broken and this is not a git checkout — copy a known-good models/ (or .git/lfs) from another machine, or re-clone with git-lfs installed."
+    return 1
+  fi
+  if ! git lfs version >/dev/null 2>&1; then
+    warn "git-lfs is not installed on this host — install it (macOS: brew install git-lfs; Debian/Ubuntu: sudo apt-get install -y git-lfs), then re-run."
+    return 1
+  fi
+  info "repairing models/ from Git LFS (fetch missing objects + re-checkout)…"
+  # Same filter config `git lfs install --local` writes, without its hook step
+  # (which aborts on hosts that already have non-LFS git hooks).
+  git -C "$ROOT" config filter.lfs.required true
+  git -C "$ROOT" config filter.lfs.clean 'git-lfs clean -- %f'
+  git -C "$ROOT" config filter.lfs.smudge 'git-lfs smudge -- %f'
+  git -C "$ROOT" config filter.lfs.process 'git-lfs filter-process'
+  local f out
+  while IFS=$'\t' read -r _ f; do
+    [ -f "$ROOT/$f" ] && rm -f -- "$ROOT/$f"
+  done < <(list_bad_models)
+  if ! out="$( { git -C "$ROOT" lfs fetch origin --include='models/**' \
+                 && git -C "$ROOT" checkout -- models/ ; } 2>&1 )"; then
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+    case "$out" in
+      *"Permission denied"*|*publickey*|*"Authentication failed"*|*"could not read Username"*)
+        warn "Git LFS could not AUTHENTICATE to the remote — LFS downloads authorize over the same ssh as git. Make 'ssh -T git@github.com' work non-interactively: a 'Host github.com' block with your IdentityFile in ~/.ssh/config survives reboots; a key that is only in ssh-agent does not." ;;
+      *quota*|*bandwidth*)
+        warn "GitHub LFS bandwidth quota exhausted (free plan: 1 GiB/month; a full models/ pull is ~530 MB). Wait for the monthly reset, buy a data pack, or copy models/ (or .git/lfs/objects) from a machine that already has them." ;;
+    esac
+    return 1
+  fi
+  return 0
+}
+
+# Gate build/ingest on healthy models, attempting in-place repair first.
+# Set LFS_AUTO_REPAIR=false (.env) to report-and-stop instead of repairing.
 check_lfs_models() {
-  [ -d "$ROOT/models" ] || return 0
-  local ptrs; ptrs="$(grep -rIl 'git-lfs.github.com/spec' "$ROOT/models" 2>/dev/null)" || true
-  if [ -n "$ptrs" ]; then
-    printf '%s\n' "$ptrs" | sed "s,^$ROOT/,  ," >&2
-    die "the vendored models above are un-materialized Git LFS pointers. Run 'git lfs install && git lfs pull', then rebuild — otherwise ingestion fails with a JSONDecodeError on PDFs with tables/OCR."
+  local bad
+  bad="$(list_bad_models)"
+  [ -z "$bad" ] && return 0
+  warn "broken vendored Docling models detected:"
+  printf '%s\n' "$bad" | awk -F'\t' '{printf "    %s  [%s]\n", $2, $1}' >&2
+  if is_true "${LFS_AUTO_REPAIR:-true}"; then
+    if repair_models; then
+      bad="$(list_bad_models)"
+      if [ -z "$bad" ]; then
+        info "models/ repaired and verified — continuing."
+        return 0
+      fi
+      warn "still broken after repair:"
+      printf '%s\n' "$bad" | awk -F'\t' '{printf "    %s  [%s]\n", $2, $1}' >&2
+    fi
+  else
+    info "skipping auto-repair (LFS_AUTO_REPAIR=false)"
   fi
-  # An empty (0-byte) model file passes the pointer grep above but still makes
-  # Docling's json.loads() die with "Expecting value: line 1 column 1 (char 0)" on
-  # the first PDF — i.e. a partial/aborted `git lfs pull`. Catch it here too.
-  local empties; empties="$(find "$ROOT/models" -type f -empty 2>/dev/null)" || true
-  if [ -n "$empties" ]; then
-    printf '%s\n' "$empties" | sed "s,^$ROOT/,  ," >&2
-    die "the vendored model files above are empty (0 bytes) — a partial Git LFS fetch. Run 'git lfs install && git lfs pull', then rebuild — otherwise ingestion fails with 'JSONDecodeError: Expecting value: line 1 column 1 (char 0)' on every PDF."
-  fi
+  die "models/ is not usable — Docling loads these files at conversion time, so every PDF would fail with 'JSONDecodeError: Expecting value: line 1 column 1 (char 0)'. Manual fix: git lfs install && git lfs pull --include='models/**' && ./docmcp.sh models   (no git checkout here? copy a known-good models/ from another machine)"
+}
+
+# The models Docling ACTUALLY loads are the ones baked into the ingest image —
+# a stale image built from a broken checkout keeps failing even after the
+# working tree is fixed. Prints the broken in-image paths; rc 1 if any.
+check_image_models() {
+  docker run --rm --entrypoint sh "$INGEST_IMAGE" -c '
+    bad="$(find /opt/docling/models -type f -empty 2>/dev/null;
+           grep -rIl "git-lfs.github.com/spec" /opt/docling/models 2>/dev/null)"
+    [ -z "$bad" ] || { printf "%s\n" "$bad"; exit 1; }'
 }
 
 # Use `image ls -q` (not `image inspect <name>`): under Docker Desktop's containerd
 # image store, `inspect` by short name:tag can spuriously report "No such image"
 # even when the image exists and runs fine.
 server_image_exists() { [ -n "$(docker image ls -q "$SERVER_IMAGE" 2>/dev/null)" ]; }
+ingest_image_exists() { [ -n "$(docker image ls -q "$INGEST_IMAGE" 2>/dev/null)" ]; }
 
 is_running() {
   local id; id="$(dc ps -q "$1" 2>/dev/null)" || return 1
@@ -242,6 +358,15 @@ cmd_add() {
 # ingest [--full]  — (re)build the curated store from raw/ in the ingestion container.
 cmd_ingest() {
   need_docker; load_env; check_lfs_models
+  # The working tree is verified; now make sure the image we are about to RUN was
+  # not baked from an earlier broken checkout (its models are the ones Docling uses).
+  if ingest_image_exists; then
+    local imgbad
+    if ! imgbad="$(check_image_models)"; then
+      [ -n "$imgbad" ] && printf '%s\n' "$imgbad" | sed 's,^/opt/docling/models/,    models/,' >&2
+      die "the ingest image ($INGEST_IMAGE) was built from a broken models/ — the files above are empty/pointers INSIDE the image, so every PDF fails there. The working tree is good now; rebuild: ./docmcp.sh build ingest"
+    fi
+  fi
   local profiles=(--profile ingest)
   if is_true "${ENABLE_VECTOR:-false}"; then
     profiles+=(--profile vector)
@@ -343,7 +468,7 @@ cmd_logs() { need_docker; dc logs -f --tail=100 docs-mcp caddy; }
 
 # build [server|ingest|all]  — (re)build images after code changes.
 cmd_build() {
-  need_docker
+  need_docker; load_env   # load_env so LFS_AUTO_REPAIR from .env reaches check_lfs_models
   case "${1:-server}" in
     server) dc build docs-mcp ;;
     ingest) check_lfs_models; dc --profile ingest build ingest ;;
@@ -1066,6 +1191,25 @@ PY
       && _dck search 0 "ripgrep available" || _dck search 1 "ripgrep missing in image"
   fi
 
+  # Vendored models — the source of the recurring "every PDF fails with
+  # JSONDecodeError" incident. A broken working tree poisons the NEXT build;
+  # a broken baked image poisons every ingest NOW. Read-only here (doctor never
+  # mutates); repair with ./docmcp.sh models --repair.
+  local mb
+  mb="$(list_bad_models)"
+  if [ -z "$mb" ]; then
+    _dck models 0 "models/ verified ($(find "$ROOT/models" -type f 2>/dev/null | wc -l | tr -d ' ') files)"
+  else
+    _dck models 1 "$(printf '%s\n' "$mb" | wc -l | tr -d ' ') broken file(s) in models/ — run: ./docmcp.sh models --repair"
+  fi
+  if ingest_image_exists; then
+    if check_image_models >/dev/null 2>&1; then
+      _dck ingest-image 0 "baked models look good"
+    else
+      _dck ingest-image 1 "broken models INSIDE $INGEST_IMAGE — rebuild: ./docmcp.sh build ingest"
+    fi
+  fi
+
   # The curated store MUST be mounted read-only in the running server (invariant).
   if is_running docs-mcp; then
     local cid rw
@@ -1096,6 +1240,48 @@ PY
   fi
 
   if [ "$fail" = 0 ]; then info "healthy"; return 0; else warn "unhealthy"; return 1; fi
+}
+
+# models [--repair]  — verify the vendored Docling models: the working tree
+# (materialized? right size per each committed LFS pointer?) AND, when built,
+# the copy baked into the ingest image. Read-only by default; exits non-zero
+# when broken. --repair re-materializes from Git LFS first (fetch + checkout).
+cmd_models() {
+  local do_repair=""
+  case "${1:-}" in
+    --repair) do_repair=1 ;;
+    "")       ;;
+    *)        die "usage: ./docmcp.sh models [--repair]" ;;
+  esac
+  local bad
+  bad="$(list_bad_models)"
+  if [ -n "$bad" ] && [ -n "$do_repair" ]; then
+    warn "broken model files:"
+    printf '%s\n' "$bad" | awk -F'\t' '{printf "    %s  [%s]\n", $2, $1}' >&2
+    repair_models || true
+    bad="$(list_bad_models)"
+  fi
+  if [ -z "$bad" ]; then
+    info "models/ OK — $(find "$ROOT/models" -type f 2>/dev/null | wc -l | tr -d ' ') files, all materialized (no pointers, empties, or size mismatches)."
+  else
+    printf '%s\n' "$bad" | awk -F'\t' '{printf "    %s  [%s]\n", $2, $1}' >&2
+    if [ -n "$do_repair" ]; then
+      die "repair did not fix the files above — see the repair messages (ssh auth / LFS quota / missing git-lfs)."
+    fi
+    die "models/ is broken (details above) — fix with: ./docmcp.sh models --repair"
+  fi
+  # Baked-image half — informational; skipped when docker is down or no image yet.
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && ingest_image_exists; then
+    local imgbad
+    if imgbad="$(check_image_models)"; then
+      info "ingest image ($INGEST_IMAGE): baked models OK."
+    else
+      [ -n "$imgbad" ] && printf '%s\n' "$imgbad" | sed 's,^/opt/docling/models/,    models/,' >&2
+      die "the ingest image was built from a broken models/ (the files above are broken INSIDE the image) — rebuild: ./docmcp.sh build ingest"
+    fi
+  else
+    info "(ingest image not built yet, or docker not running — skipped the baked-image check)"
+  fi
 }
 
 # backup [<dir>]  — snapshot the irreplaceable, NOT-version-controlled state into a
@@ -1329,6 +1515,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}logs${C_0}                      follow the server + proxy logs
   ${C_B}stop${C_0}                      stop services (your ingested store is kept)
   ${C_B}build${C_0} [server|ingest|all] (re)build images after code changes
+  ${C_B}models${C_0} [--repair]         verify the vendored Docling models (tree + baked image); --repair re-pulls via Git LFS
   ${C_B}schedule${C_0} <Nm|Nh|daily|off> run 'ingest' on a schedule — cron, or a systemd timer if cron is absent (no arg shows it)
 
 First run:
@@ -1357,6 +1544,7 @@ case "$cmd" in
   stop|down)          cmd_stop "$@" ;;
   logs)               cmd_logs "$@" ;;
   build)              cmd_build "$@" ;;
+  models)             cmd_models "$@" ;;
   schedule|cron)      cmd_schedule "$@" ;;
   token)              cmd_token "$@" ;;
   token-list|tokens)  cmd_token_list "$@" ;;

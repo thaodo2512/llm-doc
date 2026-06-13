@@ -97,6 +97,35 @@ def test_console_is_cross_platform():
     assert "[ -t 1 ]" in body  # conditional -t
 
 
+def test_open_url_is_cross_platform():
+    # Opener detection (_url_opener) must cover macOS / WSL / Linux desktop, detect WSL so it pops
+    # the Windows browser, and require a display on Linux so headless/SSH degrades to a no-op
+    # (never a hung xdg-open). These aren't cmd_* fns so _sh_body over-captures — bound each slice.
+    det = _sh_body("_url_opener").split("\nopen_url(")[0]
+    assert "Darwin)" in det  # macOS branch
+    assert "xdg-open" in det  # Linux desktop
+    assert "wslview" in det or "explorer.exe" in det  # WSL → Windows browser
+    assert "/proc/version" in det  # WSL detection
+    assert "DISPLAY" in det  # headless guard: no display → no opener → just print the URL
+    # open_url bounds the opener with `timeout` so a misconfigured xdg-open can't hang.
+    assert "timeout" in _sh_body("open_url").split("_open_when_ready")[0]
+    # the poller stops the moment its launcher (docker) dies, so Ctrl-C / port-in-use can't orphan it
+    assert "kill -0" in _sh_body("_open_when_ready")
+
+
+def test_cmd_console_auto_opens_the_right_url():
+    # The whole point of bootstrap is a token-free first run — but only if the user reaches the
+    # ?bootstrap=… link, not the bare URL (which shows a login screen). So the console must build
+    # that URL, surface it prominently, and auto-open it (unless --no-open / non-interactive / no
+    # usable opener), handing the poller its PID so a dead docker stops it.
+    body = _sh_body("cmd_console")
+    assert "--no-open" in body  # opt-out flag
+    assert "no token needed" in body  # the first-run banner makes clear no token is required
+    assert 'url="http://${urlhost}:${port}${url_suffix}"' in body  # bootstrap query is in the URL
+    assert '_open_when_ready "$url" "$probehost" "$port" "$$"' in body  # bg poll-then-open + boss PID
+    assert '[ -z "$no_open" ] && [ -t 1 ] && [ -n "$(_url_opener)" ]' in body  # full gate
+
+
 def test_menu_is_default_and_routes():
     # Running docmcp.sh with no args opens the interactive menu (help on a non-TTY),
     # and the menu routes to the console + both deploy wizards.

@@ -52,6 +52,52 @@ load_env() { if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi; }
 
 is_true() { case "${1:-}" in true|TRUE|True|1|yes|on) return 0;; *) return 1;; esac; }
 
+# Echo the browser-opener command for THIS host, or nothing when none is usable: macOS `open`,
+# WSL `wslview`/`explorer.exe` (opens the Windows browser), Linux desktop `xdg-open` — but only
+# when a display is present. Empty on a headless box / over SSH with no display, so callers fall
+# back to just printing the URL instead of spawning a doomed (and possibly hanging) opener.
+_url_opener() {
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) command -v open >/dev/null 2>&1 && printf 'open' ;;          # macOS
+    *)
+      if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then       # WSL → Windows browser
+        if command -v wslview >/dev/null 2>&1; then printf 'wslview'
+        elif command -v explorer.exe >/dev/null 2>&1; then printf 'explorer.exe'; fi
+      elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then   # Linux desktop only
+        command -v xdg-open >/dev/null 2>&1 && printf 'xdg-open'
+      fi ;;
+  esac
+}
+
+# Open a URL in the user's browser, best-effort. No-op (return 1) when no opener is usable.
+open_url() {
+  local url="$1" opener; opener="$(_url_opener)"
+  [ -n "$opener" ] || return 1
+  # Bound it with `timeout` where available: a misconfigured xdg-open (broken D-Bus, `ssh -X` with
+  # no real display) can hang. explorer.exe also exits non-zero on success — swallow both.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$opener" "$url" >/dev/null 2>&1 || true
+  else
+    "$opener" "$url" >/dev/null 2>&1 || true
+  fi
+}
+
+# Wait until a loopback TCP port accepts a connection (bash /dev/tcp; ~30s cap), then open the
+# URL. Runs in the BACKGROUND so it can fire after `exec docker run` takes the foreground — it
+# polls the just-started console and pops the browser the moment it answers. Exits at once if its
+# launcher ($4 = the pre-exec PID, which `exec` turns into the foreground `docker run`) goes away,
+# so a Ctrl-C or a failed `docker run` (e.g. the port is already in use) never leaves it polling a
+# dead port. Always returns 0: best-effort, and the URL was printed regardless.
+_open_when_ready() {
+  local url="$1" host="$2" port="$3" boss="$4" i=0
+  while [ "$i" -lt 150 ]; do                       # 150 * 0.2s ≈ 30s
+    kill -0 "$boss" 2>/dev/null || return 0         # launcher gone → stop polling a dead port
+    if (: >"/dev/tcp/${host}/${port}") 2>/dev/null; then open_url "$url"; return 0; fi
+    sleep 0.2; i=$((i + 1))
+  done
+  return 0
+}
+
 # --- vendored Docling models (Git LFS) ---------------------------------------
 # models/ lives in Git LFS and is BAKED into the ingest image at build time.
 # Every recurring "PDF ingest fails with JSONDecodeError: Expecting value: line 1
@@ -1525,7 +1571,7 @@ cmd_env_set() {
 # starts in a one-time BOOTSTRAP mode that only serves the setup wizard.
 cmd_console() {
   need_docker
-  local port=8765 bind=127.0.0.1 do_build=""
+  local port=8765 bind=127.0.0.1 do_build="" no_open=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --port)    port="${2:-}"; shift 2 || die "--port needs a value" ;;
@@ -1533,7 +1579,8 @@ cmd_console() {
       --bind)    bind="${2:-}"; shift 2 || die "--bind needs a value" ;;
       --bind=*)  bind="${1#--bind=}"; shift ;;
       --build)   do_build=1; shift ;;
-      *)         die "usage: ./docmcp.sh console [--port N] [--bind 127.0.0.1] [--build]" ;;
+      --no-open) no_open=1; shift ;;
+      *)         die "usage: ./docmcp.sh console [--port N] [--bind 127.0.0.1] [--build] [--no-open]" ;;
     esac
   done
   # Loopback only: the console runs Docker and edits tokens — far too powerful to expose.
@@ -1603,8 +1650,36 @@ cmd_console() {
       ;;
   esac
 
-  info "Console: ${C_B}http://${bind}:${port}${url_suffix}${C_0}"
+  # The browser URL: bracket a bare IPv6 loopback; probe 127.0.0.1 for localhost/127.0.0.1.
+  local urlhost="$bind" probehost="127.0.0.1"
+  case "$bind" in
+    ::1) urlhost="[::1]"; probehost="::1" ;;
+    127.0.0.1|localhost) probehost="127.0.0.1" ;;
+  esac
+  local url="http://${urlhost}:${port}${url_suffix}"
+
+  # Prominent, copyable banner — the printed URL used to scroll away above the build + uvicorn
+  # logs, so first-run users opened the bare URL (no ?bootstrap=…) and hit the login screen.
+  printf '\n'
+  if [ -n "$bootstrap" ]; then
+    info "${C_B}docmcp console — first-run setup${C_0}"
+    printf '    Open this link to start the setup wizard %s(no token needed)%s:\n\n' "$C_Y" "$C_0"
+    printf '      %s%s%s\n\n' "$C_B" "$url" "$C_0"
+  else
+    info "${C_B}docmcp console${C_0}"
+    printf '      %s%s%s\n\n' "$C_B" "$url" "$C_0"
+    printf '    Sign in with your admin (whole-corpus) token.\n'
+  fi
+  # Auto-open the browser (best-effort) unless suppressed, non-interactive, or no usable opener
+  # exists (headless / SSH with no display) — in which case the prominent banner above is the
+  # guidance. Runs in the background so it can fire after `exec docker run` below takes the
+  # foreground; it's handed $$ (this PID, which `exec` turns into docker) so it stops if docker dies.
+  if [ -z "$no_open" ] && [ -t 1 ] && [ -n "$(_url_opener)" ]; then
+    printf '    Opening it in your browser…  %s(disable with --no-open)%s\n' "$C_Y" "$C_0"
+    _open_when_ready "$url" "$probehost" "$port" "$$" &
+  fi
   info "  loopback only — stop with Ctrl-C"
+
   # Bind the repo at the SAME absolute path so docmcp.sh inside resolves ROOT identically
   # and compose's ../raw etc. resolve on the HOST daemon. PYTHONPATH points at the mounted
   # src so console code edits take effect without an image rebuild. ALLOW_PLAINTEXT_PORTAL
@@ -1638,7 +1713,7 @@ cmd_menu() {
   [ -s "$ROOT/tokens.json" ] || hint=" ${C_Y}(not set up yet — try 1, 2, 3, or 4)${C_0}"
   while :; do
     printf '\n%s\n\n' "${C_B}docmcp${C_0} — what would you like to do?${hint}"
-    printf '  %s1%s  Web console (UI)      browser admin + setup wizard (loopback only)\n'     "$C_B" "$C_0"
+    printf '  %s1%s  Web console (UI)      opens your browser — first run starts the setup wizard\n' "$C_B" "$C_0"
     printf '  %s2%s  Deploy locally        loopback on this machine (plain HTTP, 127.0.0.1)\n' "$C_B" "$C_0"
     printf '  %s3%s  Deploy to a server    remote: VPN (plaintext) or HTTPS (hostname)\n'       "$C_B" "$C_0"
     printf '  %s4%s  Quick setup           build image + create .env + admin token\n'           "$C_B" "$C_0"
@@ -1678,7 +1753,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}add${C_0} <path>...             stage files/dirs into raw/
   ${C_B}ingest${C_0} [--full]           build the searchable store from raw/ (in a container)
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
-  ${C_B}console${C_0} [--port N] [--build]  launch the admin/setup web console (loopback only)
+  ${C_B}console${C_0} [--port N] [--build] [--no-open]  launch the admin/setup web console (loopback only; opens your browser)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
   ${C_B}status${C_0}                    show services, URL, and index summary
   ${C_B}inventory${C_0}                 corpus breakdown by type + top-level folder

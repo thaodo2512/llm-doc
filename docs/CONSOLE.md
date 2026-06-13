@@ -12,20 +12,30 @@ console is a single-operator, host-level surface for *running the server*.
 ## Running it
 
 ```sh
-./docmcp.sh console            # build the UI + console image if needed, then launch
+./docmcp.sh console            # build the UI + console image if needed, then launch + open browser
 ./docmcp.sh console --build    # force-rebuild the SPA and the console image
 ./docmcp.sh console --port 9000
+./docmcp.sh console --no-open   # don't auto-open the browser (just print the URL)
 ```
 
-Or just run `./docmcp.sh` with no arguments for an interactive menu (console · deploy
-locally · deploy to a server · setup · ops); on a non-interactive shell it prints the full
-command list instead.
+Or just run `./docmcp.sh` with no arguments for an interactive menu and pick **1**
+(console · deploy locally · deploy to a server · setup · ops); on a non-interactive shell it
+prints the full command list instead.
 
-Open the printed URL (default `http://127.0.0.1:8765`). On a brand-new checkout — before
-any admin token exists — the command prints a one-time **bootstrap** link
-(`http://127.0.0.1:8765/?bootstrap=…`); open it to run the setup wizard. Bootstrap access
-closes automatically the moment setup mints the admin token; after that you sign in with
-the admin (whole-corpus, `--all`) token.
+**First run is token-free.** On a brand-new checkout — before any admin token exists — the
+console starts in **bootstrap** mode and prints a one-time link
+(`http://127.0.0.1:8765/?bootstrap=…`). It **auto-opens that link in your browser** (macOS
+`open`, WSL → the Windows browser, Linux `xdg-open`), which signs you straight into the setup
+wizard — **you don't paste any token**. The wizard mints the admin token at the end; bootstrap
+access closes automatically the moment it does.
+
+> If you open the *bare* URL (`http://127.0.0.1:8765`, no `?bootstrap=…`) on a fresh checkout,
+> you'll land on a login screen asking for an admin token that doesn't exist yet — that's the
+> wrong door. Use the `?bootstrap=…` link the command prints (or just let it open the browser
+> for you). Over SSH, or with `--no-open`, copy the printed bootstrap URL into your browser.
+
+After setup, the console drops back to the normal login screen and you sign in with the admin
+(whole-corpus, `--all`) token.
 
 ### How it runs (and why)
 

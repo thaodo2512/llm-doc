@@ -220,3 +220,26 @@ async def test_session_reports_import_dir(tmp_path, monkeypatch):
     app = make_app(tmp_path, monkeypatch, bootstrap="boot-1")
     async with client(app) as ac:
         assert (await ac.get("/api/session")).json()["import_dir"] == "mydocs"
+
+
+async def test_bootstrap_can_watch_its_job_after_setup(tmp_path, monkeypatch):
+    # The wizard runs under a bootstrap session, but setup mints the admin token mid-deploy
+    # (setup_done flips). The bootstrap session must keep reading its job's status/log so the live
+    # stream doesn't 401 mid-run — yet must NOT be able to start a new setup or read admin data.
+    app = make_app(tmp_path, monkeypatch, bootstrap="boot-xyz")
+    async with client(app) as ac:
+        await ac.post("/api/login", json={"bootstrap": "boot-xyz"})
+        csrf = (await ac.get("/api/session")).json()["csrf"]
+        r = await ac.post("/api/wizard/apply", json={"profile": "local"}, headers={"x-csrf-token": csrf})
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        # setup "completes" mid-job: an admin token appears → setup_done flips, bootstrap dies
+        (tmp_path / "tokens.json").write_text(json.dumps({ADMIN: {"user": "admin", "allowed_prefixes": ["/"]}}))
+        # job reads STILL work for the now-stale bootstrap session (the fix)
+        assert (await ac.get(f"/api/jobs/{job_id}")).status_code == 200
+        assert (await ac.get(f"/api/jobs/{job_id}/log")).status_code == 200
+        # …but it can't start a new setup, can't read admin data, and isn't a live session elsewhere
+        assert (await ac.get("/api/session")).json()["authenticated"] is False
+        assert (await ac.post("/api/wizard/apply", json={"profile": "local"},
+                              headers={"x-csrf-token": csrf})).status_code == 403
+        assert (await ac.get("/api/tokens")).status_code == 401

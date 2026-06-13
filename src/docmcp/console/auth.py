@@ -76,15 +76,20 @@ class ConsoleAuth:
         return sess
 
     # -- session / cookie helpers --------------------------------------------
-    def session(self, request: Request) -> dict | None:
+    def session(self, request: Request, *, allow_stale_bootstrap: bool = False) -> dict | None:
         raw = request.cookies.get(COOKIE)
         if not raw:
             return None
         sess = sessions.verify(raw, self.settings.session_secret)
         if not sess:
             return None
-        # A bootstrap session dies as soon as an admin token has been minted.
-        if sess.get("role") == "bootstrap" and self.setup_done():
+        # A bootstrap session dies as soon as an admin token has been minted — EXCEPT for reading
+        # the very wizard job that minted it (allow_stale_bootstrap). Setup runs FIRST in the
+        # deploy (it mints the admin token, flipping setup_done), so without this the live log
+        # would 401 the instant setup finished — mid-deploy, while the long ingest is still going —
+        # and the user would watch the stream freeze. A stale bootstrap can still ONLY read job
+        # output (status/log/stream); it cannot start a new setup or reach any admin data.
+        if sess.get("role") == "bootstrap" and self.setup_done() and not allow_stale_bootstrap:
             return None
         return sess
 
@@ -103,10 +108,13 @@ class ConsoleAuth:
         resp.delete_cookie(COOKIE, path="/", samesite="strict", secure=self.secure, httponly=True)
 
     # -- guards --------------------------------------------------------------
-    def require(self, request: Request, *, admin: bool = True) -> dict | None:
+    def require(
+        self, request: Request, *, admin: bool = True, allow_stale_bootstrap: bool = False
+    ) -> dict | None:
         """Return the session if present and (when ``admin``) it is an admin session.
-        Does NOT check CSRF — use :meth:`guard` for mutations."""
-        sess = self.session(request)
+        Does NOT check CSRF — use :meth:`guard` for mutations. ``allow_stale_bootstrap`` lets a
+        bootstrap session survive past setup for READ-ONLY job inspection (see :meth:`session`)."""
+        sess = self.session(request, allow_stale_bootstrap=allow_stale_bootstrap)
         if not sess:
             return None
         if admin and sess.get("role") != "admin":

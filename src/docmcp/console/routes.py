@@ -353,7 +353,9 @@ class Console:
 
     # -- job inspection ------------------------------------------------------
     async def job_status(self, request: Request) -> Response:
-        if not self.auth.require(request, admin=False):
+        # allow_stale_bootstrap: the first-run wizard runs under a bootstrap session that setup
+        # invalidates mid-deploy; it must still be able to watch its job finish.
+        if not self.auth.require(request, admin=False, allow_stale_bootstrap=True):
             return _json({"error": "unauthorized"}, 401)
         job = self.runner.get(request.path_params["job_id"])
         if not job:
@@ -361,7 +363,7 @@ class Console:
         return _json(job.to_dict())
 
     async def job_log(self, request: Request) -> Response:
-        if not self.auth.require(request, admin=False):
+        if not self.auth.require(request, admin=False, allow_stale_bootstrap=True):
             return _json({"error": "unauthorized"}, 401)
         job = self.runner.get(request.path_params["job_id"])
         if not job:
@@ -374,7 +376,7 @@ class Console:
         return _json({"cursor": cursor, "lines": lines, "status": job.status, "exit_code": job.exit_code})
 
     async def job_stream(self, request: Request) -> Response:
-        if not self.auth.require(request, admin=False):
+        if not self.auth.require(request, admin=False, allow_stale_bootstrap=True):
             return _json({"error": "unauthorized"}, 401)
         job = self.runner.get(request.path_params["job_id"])
         if not job:

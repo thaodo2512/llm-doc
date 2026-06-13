@@ -41,7 +41,11 @@ export function Wizard() {
   const onDone = (status: string) => {
     if (status === "done") {
       setDone(true);
-      auth.refresh();
+      // For an admin re-run, refresh to pick up new state. For a first-run BOOTSTRAP session, do
+      // NOT refresh: setup_done now invalidates bootstrap, so refreshing would bounce the user to
+      // /login before they can copy the admin token shown in the completed log. They sign in via
+      // the button in the success message instead.
+      if (auth.role !== "bootstrap") auth.refresh();
     }
   };
 

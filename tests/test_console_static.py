@@ -126,6 +126,14 @@ def test_cmd_console_auto_opens_the_right_url():
     assert '[ -z "$no_open" ] && [ -t 1 ] && [ -n "$(_url_opener)" ]' in body  # full gate
 
 
+def test_urandom_pipelines_tolerate_sigpipe():
+    # `tr -dc … </dev/urandom | head -c N` makes tr SIGPIPE (head closes the infinite stream).
+    # Under `set -o pipefail` + `set -e` that aborts the script (exit 141) — and silently, if it's
+    # an assignment. Every such pipeline MUST end with `|| true` so it can't kill the launcher.
+    for m in re.finditer(r"</dev/urandom \| head -c \d+( \|\| true)?", SH):
+        assert m.group(1), f"urandom|head pipeline missing `|| true`: {m.group(0)!r}"
+
+
 def test_menu_is_default_and_routes():
     # Running docmcp.sh with no args opens the interactive menu (help on a non-TTY),
     # and the menu routes to the console + both deploy wizards.

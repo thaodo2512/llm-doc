@@ -361,7 +361,7 @@ cmd_setup() {
   # A session secret for the optional portal (only used when PORTAL_ENABLED=true).
   grep -qE '^SESSION_SECRET=.+' "$ROOT/.env" 2>/dev/null \
     || printf '\n# Portal session-cookie HMAC key (auto-generated).\nSESSION_SECRET=%s\n' \
-         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)" >> "$ROOT/.env"
+         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 || true)" >> "$ROOT/.env"
   load_env
 
   info "Building the server image (one-time; usually 1–3 minutes)…"
@@ -1595,7 +1595,7 @@ cmd_console() {
   [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; }
   grep -qE '^SESSION_SECRET=.+' "$ROOT/.env" 2>/dev/null \
     || printf '\n# Console/portal session-cookie HMAC key (auto-generated).\nSESSION_SECRET=%s\n' \
-         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)" >> "$ROOT/.env"
+         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 || true)" >> "$ROOT/.env"
   load_env
 
   # Build the SPA in a throwaway node container (no host Node needed) on --build or first run.
@@ -1622,7 +1622,11 @@ cmd_console() {
   # passed via env; the console refuses it the moment setup mints the admin token.
   local bootstrap="" url_suffix=""
   if [ ! -s "$ROOT/tokens.json" ] || ! grep -q '"user"' "$ROOT/tokens.json" 2>/dev/null; then
-    bootstrap="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    # `|| true` is load-bearing: /dev/urandom is infinite, so `head -c 32` closes the pipe and
+    # `tr` dies with SIGPIPE (141). Under `set -o pipefail` that fails the assignment and `set -e`
+    # would silently kill the script right here — before the banner ever prints. head still
+    # captured its 32 bytes, so the token is correct; we only need to swallow tr's exit status.
+    bootstrap="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 || true)"
     url_suffix="/?bootstrap=${bootstrap}"
     warn "no admin token yet — starting in BOOTSTRAP mode. Open the URL below to run the setup wizard; bootstrap access closes automatically once setup mints the admin token."
   fi

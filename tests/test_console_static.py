@@ -86,6 +86,17 @@ def test_cmd_console_bootstrap_and_dood():
     assert "docs-mcp:console" in body
 
 
+def test_console_is_cross_platform():
+    # macOS / Ubuntu / WSL Ubuntu. The console runs as an arbitrary host uid, so npm and
+    # buildx need a writable HOME (else Linux fails with "/.npm/_logs" / buildx errors;
+    # Docker Desktop on macOS masks this). It must honor DOCKER_HOST (rootless Docker / WSL),
+    # and only allocate a TTY when attached to one (WSL-safe when output is redirected).
+    body = _sh_body("cmd_console")
+    assert body.count("HOME=/tmp") >= 2  # the node build container AND the console container
+    assert "DOCKER_HOST" in body  # rootless / custom-socket / TCP daemons, not just the default
+    assert "[ -t 1 ]" in body  # conditional -t
+
+
 def test_menu_is_default_and_routes():
     # Running docmcp.sh with no args opens the interactive menu (help on a non-TTY),
     # and the menu routes to the console + both deploy wizards.

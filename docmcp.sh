@@ -1555,7 +1555,10 @@ cmd_console() {
   if [ -n "$do_build" ] || [ ! -f "$ROOT/console-ui/dist/index.html" ]; then
     [ -d "$ROOT/console-ui" ] || die "console-ui/ is missing — cannot build the console UI"
     info "Building the console UI (Vite, in a node:20 container)…"
-    docker run --rm -v "$ROOT/console-ui:/app" -w /app --user "$(id -u):$(id -g)" \
+    # HOME=/tmp gives npm a writable cache/log dir: running as an arbitrary host uid with no
+    # home, npm otherwise fails with "error writing to the directory: /.npm/_logs" on Linux
+    # (Docker Desktop on macOS masks this via uid mapping; native Ubuntu/WSL does not).
+    docker run --rm -v "$ROOT/console-ui:/app" -w /app --user "$(id -u):$(id -g)" -e HOME=/tmp \
       node:20 sh -lc "npm install --no-audit --no-fund && npm run build" \
       || die "console UI build failed (see output above)"
   fi
@@ -1577,13 +1580,28 @@ cmd_console() {
     warn "no admin token yet — starting in BOOTSTRAP mode. Open the URL below to run the setup wizard; bootstrap access closes automatically once setup mints the admin token."
   fi
 
-  # Let the non-root container user reach the Docker socket. The gid that owns the socket
-  # INSIDE the container is what the runtime enforces (on Docker Desktop that is 0, not the
-  # host's gid), so probe it through the console image rather than with host `stat`, which
-  # returns a gid that is meaningless inside the Linux VM.
-  local sock=/var/run/docker.sock sock_gid="" gid_arg=()
-  sock_gid="$(docker run --rm -v "$sock:$sock" docs-mcp:console stat -c '%g' "$sock" 2>/dev/null || true)"
-  [ -n "$sock_gid" ] && gid_arg=(--group-add "$sock_gid")
+  # Docker-out-of-docker wiring. Honor DOCKER_HOST so rootless Docker
+  # (unix://\$XDG_RUNTIME_DIR/docker.sock — common on Ubuntu) and remote/TCP daemons work, not
+  # just the default /var/run/docker.sock that Docker Desktop (macOS / WSL) and rootful Linux use.
+  local dood=()
+  case "${DOCKER_HOST:-}" in
+    ""|unix://*)
+      local sock=/var/run/docker.sock
+      [ -z "${DOCKER_HOST:-}" ] || sock="${DOCKER_HOST#unix://}"
+      [ -S "$sock" ] || die "Docker socket not found at ${sock} — start Docker, or set DOCKER_HOST (rootless Docker usually sets DOCKER_HOST=unix://\$XDG_RUNTIME_DIR/docker.sock)."
+      # The gid that owns the socket INSIDE the container is what the runtime enforces: Docker
+      # Desktop maps it to 0; rootful Linux preserves the host docker gid through the bind mount.
+      # Probe it via the console image, not host `stat` (whose gid is meaningless in the Linux VM
+      # and differs BSD vs GNU).
+      local sock_gid; sock_gid="$(docker run --rm -v "$sock:$sock" docs-mcp:console stat -c '%g' "$sock" 2>/dev/null || true)"
+      dood+=(-v "$sock:$sock" -e "DOCKER_HOST=unix://$sock")
+      [ -n "$sock_gid" ] && dood+=(--group-add "$sock_gid")
+      ;;
+    *)
+      warn "DOCKER_HOST=${DOCKER_HOST} is not a unix socket — passing it through; the console container must be able to reach that endpoint (a routable host/IP, not localhost)."
+      dood+=(-e "DOCKER_HOST=${DOCKER_HOST}")
+      ;;
+  esac
 
   info "Console: ${C_B}http://${bind}:${port}${url_suffix}${C_0}"
   info "  loopback only — stop with Ctrl-C"
@@ -1591,12 +1609,14 @@ cmd_console() {
   # and compose's ../raw etc. resolve on the HOST daemon. PYTHONPATH points at the mounted
   # src so console code edits take effect without an image rebuild. ALLOW_PLAINTEXT_PORTAL
   # is forced on: the console is loopback HTTP, so session cookies must not be Secure-only.
-  exec docker run --rm -t \
+  local tty=(); [ -t 1 ] && tty=(-t)   # allocate a TTY only when attached to one (WSL-safe)
+  exec docker run --rm ${tty[@]+"${tty[@]}"} \
     --name docs-mcp-console \
     -p "${bind}:${port}:8080" \
-    -v "$sock:$sock" \
+    ${dood[@]+"${dood[@]}"} \
     -v "$ROOT:$ROOT" -w "$ROOT" \
-    --user "$(id -u):$(id -g)" ${gid_arg[@]+"${gid_arg[@]}"} \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
     -e PYTHONPATH="$ROOT/src" \
     -e DOCMCP_REPO_ROOT="$ROOT" \
     -e TOKENS_FILE="$ROOT/tokens.json" \

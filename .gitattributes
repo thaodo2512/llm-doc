@@ -1,3 +1,11 @@
+# Executable shell scripts and container/deploy files MUST keep LF endings so they run
+# under bash on Linux / WSL Ubuntu even when the repo is cloned through Windows git
+# (core.autocrlf=true would otherwise rewrite them to CRLF and bash fails with
+# "\r: command not found"; a CRLF Dockerfile RUN line breaks the same way).
+*.sh                 text eol=lf
+docker/Dockerfile    text eol=lf
+docker/Caddyfile     text eol=lf
+
 # Version-control the raw/ document corpus.
 #
 # DEFAULT: everything under raw/ is treated as binary and stored in Git LFS, so

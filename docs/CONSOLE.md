@@ -60,6 +60,27 @@ flag (e.g. a user named `--all` is rejected). Reads that don't need Docker (toke
 access, config) are served directly from the bind-mounted files; status/doctor/inventory
 shell out to the read-only verbs.
 
+## Platforms
+
+Works on **macOS, Ubuntu, and WSL Ubuntu** — the only host requirement is Docker (with the
+Compose plugin). Cross-platform specifics the console handles for you:
+
+- **Docker endpoint** — honors `DOCKER_HOST`, so rootless Docker
+  (`unix://$XDG_RUNTIME_DIR/docker.sock`, common on Ubuntu) and Docker Desktop's WSL backend
+  work, not just the default `/var/run/docker.sock`.
+- **Socket group** — the gid that owns the socket *inside* the container is probed at launch
+  (Docker Desktop maps it to `0`; rootful Linux preserves the host `docker` gid through the
+  bind mount), so the non-root console user can reach the daemon on every platform.
+- **File ownership** — the console runs as your host uid/gid, so `tokens.json`/`.env` it writes
+  stay owned by you on native Linux (not root).
+- **npm / buildx** — the dockerized SPA build and in-container `docker build` get a writable
+  `HOME`, which Linux requires when running as an arbitrary uid.
+- **Line endings** — `.gitattributes` pins `*.sh` (and the Dockerfile/Caddyfile) to LF, so a
+  repo cloned through Windows git still runs under bash in WSL.
+
+The host helper script (`docmcp.sh`) is bash-3.2-safe (macOS' system bash) and uses only
+portable coreutils (no `sed -i`, GNU-only `find`/`stat`/`date` flags, etc.).
+
 ## Architecture
 
 ```

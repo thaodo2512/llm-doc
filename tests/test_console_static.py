@@ -134,6 +134,22 @@ def test_urandom_pipelines_tolerate_sigpipe():
         assert m.group(1), f"urandom|head pipeline missing `|| true`: {m.group(0)!r}"
 
 
+def test_cmd_console_imports_a_folder():
+    # A new user can point setup at a docs folder (menu prompt or --docs); the console mounts it
+    # read-only and advertises CONSOLE_IMPORT_DIR so the wizard's deploy stages + indexes it,
+    # i.e. the corpus is imported THROUGH the setup, not as a separate wired-up step.
+    body = _sh_body("cmd_console")
+    assert "--docs" in body  # flag parsed
+    assert "CONSOLE_IMPORT_DIR=" in body  # advertised to the app + wizard
+    assert "CONSOLE_IMPORT_NAME=" in body  # display name
+    assert ":ro" in body  # mounted read-only
+    assert '${import[@]+"${import[@]}"}' in body  # passed to docker run
+    # the interactive menu prompts for the folder, so no flag knowledge is needed
+    menu = _sh_body("cmd_menu")
+    assert "Folder of docs to index" in menu
+    assert "cmd_console --docs" in menu
+
+
 def test_menu_is_default_and_routes():
     # Running docmcp.sh with no args opens the interactive menu (help on a non-TTY),
     # and the menu routes to the console + both deploy wizards.

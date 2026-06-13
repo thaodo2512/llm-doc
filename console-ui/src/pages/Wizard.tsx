@@ -81,6 +81,11 @@ export function Wizard() {
     <div>
       <PageTitle title="Setup wizard" subtitle="Configure a deployment profile, then build + serve" />
       {err && <Alert kind="err">{err}</Alert>}
+      {auth.import_dir && (
+        <Alert kind="ok">
+          📁 <span className="mono">{auth.import_dir}</span> will be imported and indexed during this setup.
+        </Alert>
+      )}
       <div className="card">
         <Steps />
 

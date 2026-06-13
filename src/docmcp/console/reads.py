@@ -78,6 +78,63 @@ def list_tokens(settings: Settings) -> list[dict]:
     return out
 
 
+def _env_dict(settings: Settings) -> dict:
+    """Parse the bind-mounted ``.env`` fresh. The deploy rewrites it (HTTP_PORT/DOMAIN/…), but the
+    console's own ``os.environ`` is frozen from launch — so anything reflecting the DEPLOYED state
+    must read the file, not the process env. Last value wins on duplicate keys."""
+    out: dict = {}
+    env_path = Path(settings.tokens_file).parent / ".env"
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, _, v = s.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def public_mcp_url(settings: Settings) -> str:
+    """The MCP endpoint a client should point at, derived from the DEPLOYED config (``.env`` on
+    disk) so it matches the port/domain the deploy actually serves on."""
+    env = _env_dict(settings)
+    domain = (env.get("DOMAIN") or "").strip()
+    http_port = (env.get("HTTP_PORT") or "80").strip() or "80"
+    if domain and not domain.startswith(":"):
+        return f"https://{domain}/mcp"
+    if http_port == "80":
+        return "http://localhost/mcp"
+    return f"http://localhost:{http_port}/mcp"
+
+
+def client_bearer_token(settings: Settings) -> str | None:
+    """A ready-to-use bearer token for a local read client (e.g. Codex): the whole-corpus
+    (``--all``) token minted at setup, returned verbatim so the Connect view can embed it in the
+    client config — the user copies a working config instead of minting and pasting a token.
+
+    Prefers a non-expiring whole-corpus token; skips expired ones. Returns None before setup. The
+    doc MCP server is read-only, so this only grants reads; the token's write scope is irrelevant
+    to it (it matters only to the upload portal)."""
+    tokens = _load_json(settings.tokens_file)
+    groups = _load_json(settings.groups_file)
+    now = time.time()
+    fallback: str | None = None
+    for tok, rec in tokens.items():
+        if not isinstance(rec, dict):
+            continue
+        exp = rec.get("expires_at")
+        if exp is not None and exp < now:
+            continue  # never hand out an expired token
+        if rbac.is_allowed("/", effective_prefixes(rec, groups)):
+            if exp is None:
+                return tok  # non-expiring whole-corpus token — the ideal break-glass/admin token
+            fallback = fallback or tok
+    return fallback
+
+
 def list_groups(settings: Settings) -> list[dict]:
     groups = _load_json(settings.groups_file)
     tokens = _load_json(settings.tokens_file)

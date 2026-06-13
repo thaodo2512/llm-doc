@@ -1571,7 +1571,7 @@ cmd_env_set() {
 # starts in a one-time BOOTSTRAP mode that only serves the setup wizard.
 cmd_console() {
   need_docker
-  local port=8765 bind=127.0.0.1 do_build="" no_open=""
+  local port=8765 bind=127.0.0.1 do_build="" no_open="" docs_src=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --port)    port="${2:-}"; shift 2 || die "--port needs a value" ;;
@@ -1580,7 +1580,9 @@ cmd_console() {
       --bind=*)  bind="${1#--bind=}"; shift ;;
       --build)   do_build=1; shift ;;
       --no-open) no_open=1; shift ;;
-      *)         die "usage: ./docmcp.sh console [--port N] [--bind 127.0.0.1] [--build] [--no-open]" ;;
+      --docs)    docs_src="${2:-}"; shift 2 || die "--docs needs a value" ;;
+      --docs=*)  docs_src="${1#--docs=}"; shift ;;
+      *)         die "usage: ./docmcp.sh console [--port N] [--bind 127.0.0.1] [--build] [--no-open] [--docs DIR]" ;;
     esac
   done
   # Loopback only: the console runs Docker and edits tokens — far too powerful to expose.
@@ -1654,6 +1656,29 @@ cmd_console() {
       ;;
   esac
 
+  # Optional docs folder to import during setup (--docs, or the menu prompt). Mount it read-only
+  # so the wizard can stage + ingest it; the console then advertises it via CONSOLE_IMPORT_DIR and
+  # the wizard's deploy runs `--docs` on it. Mount at the SAME absolute path so the path the
+  # console hands the deploy resolves identically (the $ROOT:$ROOT path-identity rule); skip the
+  # extra mount if it already lives under the repo (then it's visible via the repo mount).
+  local import=()
+  if [ -n "$docs_src" ]; then
+    # Expand a leading ~ (the menu's `read` doesn't). SC2088 is a false positive here: we match a
+    # literal ~ as a pattern and expand it via $HOME ourselves.
+    # shellcheck disable=SC2088
+    case "$docs_src" in '~'|'~/'*) docs_src="$HOME${docs_src#\~}" ;; esac
+    [ -e "$docs_src" ] || die "--docs path not found: $docs_src"
+    local docs_abs
+    if [ -d "$docs_src" ]; then docs_abs="$(cd "$docs_src" && pwd)"
+    else docs_abs="$(cd "$(dirname "$docs_src")" && pwd)/$(basename "$docs_src")"; fi
+    case "$docs_abs" in
+      "$ROOT"|"$ROOT"/*) ;;                                  # already visible via -v "$ROOT:$ROOT"
+      *) import+=(-v "$docs_abs:$docs_abs:ro") ;;
+    esac
+    import+=(-e "CONSOLE_IMPORT_DIR=$docs_abs" -e "CONSOLE_IMPORT_NAME=$(basename "$docs_abs")")
+    info "will import + index during setup: ${C_B}${docs_abs}${C_0}"
+  fi
+
   # The browser URL: bracket a bare IPv6 loopback; probe 127.0.0.1 for localhost/127.0.0.1.
   local urlhost="$bind" probehost="127.0.0.1"
   case "$bind" in
@@ -1693,6 +1718,7 @@ cmd_console() {
     --name docs-mcp-console \
     -p "${bind}:${port}:8080" \
     ${dood[@]+"${dood[@]}"} \
+    ${import[@]+"${import[@]}"} \
     -v "$ROOT:$ROOT" -w "$ROOT" \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
@@ -1729,7 +1755,11 @@ cmd_menu() {
     printf '\nChoose [1-8, q]: '
     local choice; IFS= read -r choice || { printf '\n'; return 0; }
     case "$choice" in
-      1) cmd_console ;;                              # foreground; execs docker run (replaces process)
+      1)                                             # foreground; execs docker run (replaces process)
+         local _d=""
+         printf 'Folder of docs to index now? (absolute path; Enter to skip): '
+         IFS= read -r _d || _d=""
+         if [ -n "$_d" ]; then cmd_console --docs "$_d"; else cmd_console; fi ;;
       2) exec "$ROOT/local_deploy.sh" ;;
       3) exec "$ROOT/remote_deploy.sh" ;;
       4) ( cmd_setup ) || warn "setup did not complete" ;;
@@ -1757,7 +1787,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}add${C_0} <path>...             stage files/dirs into raw/
   ${C_B}ingest${C_0} [--full]           build the searchable store from raw/ (in a container)
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
-  ${C_B}console${C_0} [--port N] [--build] [--no-open]  launch the admin/setup web console (loopback only; opens your browser)
+  ${C_B}console${C_0} [--port N] [--build] [--no-open] [--docs DIR]  launch the admin/setup web console (loopback; opens your browser; --docs imports a folder during setup)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
   ${C_B}status${C_0}                    show services, URL, and index summary
   ${C_B}inventory${C_0}                 corpus breakdown by type + top-level folder

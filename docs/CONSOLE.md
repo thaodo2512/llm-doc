@@ -16,11 +16,14 @@ console is a single-operator, host-level surface for *running the server*.
 ./docmcp.sh console --build    # force-rebuild the SPA and the console image
 ./docmcp.sh console --port 9000
 ./docmcp.sh console --no-open   # don't auto-open the browser (just print the URL)
+./docmcp.sh console --docs ~/my-docs   # import + index this folder during setup
 ```
 
 Or just run `./docmcp.sh` with no arguments for an interactive menu and pick **1**
 (console · deploy locally · deploy to a server · setup · ops); on a non-interactive shell it
-prints the full command list instead.
+prints the full command list instead. Picking **1** also **prompts you for a docs folder to
+index** — point it at a directory and the setup wizard stages + indexes it for you (no separate
+ingest step, no files to copy by hand).
 
 **First run is token-free.** On a brand-new checkout — before any admin token exists — the
 console starts in **bootstrap** mode and prints a one-time link
@@ -36,6 +39,19 @@ access closes automatically the moment it does.
 
 After setup, the console drops back to the normal login screen and you sign in with the admin
 (whole-corpus, `--all`) token.
+
+### Connecting a client (e.g. Codex)
+
+The **Connect** page gives a ready-to-run command with the token **already filled in** — nothing
+to mint or paste:
+
+```sh
+export DOCS_MCP_TOKEN=tok_…            # the token is pre-filled for you
+codex mcp add docs --url http://localhost:8080/mcp --bearer-token-env-var DOCS_MCP_TOKEN
+```
+
+Run those two lines, then `codex` → `/mcp` to confirm it connected. The URL reflects the port the
+deploy actually serves on (read from `.env`), so it's correct whatever profile/port you chose.
 
 ### How it runs (and why)
 

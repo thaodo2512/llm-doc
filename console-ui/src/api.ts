@@ -49,6 +49,7 @@ export interface SessionInfo {
   user?: string;
   role?: "admin" | "bootstrap";
   csrf?: string;
+  import_dir?: string | null;
 }
 export interface TokenRow {
   id: string;
@@ -97,7 +98,7 @@ export const api = {
   inventory: () => request<VerbResult>("/api/inventory"),
   config: () => request<{ settings: any; env: any[]; editable_keys: string[] }>("/api/config"),
   setConfig: (key: string, value: string) => post<VerbResult>("/api/config", { key, value }),
-  connect: () => request<{ url: string; codex_toml: string }>("/api/connect"),
+  connect: () => request<{ url: string; codex_cmd: string; has_token: boolean }>("/api/connect"),
 
   tokens: () => request<{ tokens: TokenRow[] }>("/api/tokens"),
   mintToken: (body: Record<string, unknown>) =>

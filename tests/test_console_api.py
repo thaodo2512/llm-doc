@@ -186,3 +186,37 @@ async def test_bootstrap_can_drive_wizard(tmp_path, monkeypatch):
             "/api/wizard/apply", json={"profile": "local", "port": 8080}, headers={"X-CSRF-Token": csrf}
         )
         assert r.status_code == 202 and r.json()["job_id"]
+
+
+async def test_connect_embeds_real_token(tmp_path, monkeypatch):
+    # The Connect view emits the ready-to-run `codex mcp add` command with the token filled in —
+    # nothing to mint, look up, or hand-edit. URL uses the DEPLOYED port from .env (here 9001).
+    app = make_app(
+        tmp_path, monkeypatch,
+        tokens={ADMIN: {"user": "admin", "allowed_prefixes": ["/"]}},
+        env_text="HTTP_PORT=9001\n",
+    )
+    async with client(app) as ac:
+        await _login(ac, ADMIN)
+        body = (await ac.get("/api/connect")).json()
+        assert body["has_token"] is True
+        assert body["url"] == "http://localhost:9001/mcp"  # deployed port, not stale :80
+        assert "codex mcp add docs --url http://localhost:9001/mcp" in body["codex_cmd"]
+        assert f"DOCS_MCP_TOKEN={ADMIN}" in body["codex_cmd"]  # real token filled in
+        assert "--bearer-token-env-var DOCS_MCP_TOKEN" in body["codex_cmd"]
+
+
+async def test_connect_has_no_token_before_setup(tmp_path, monkeypatch):
+    # Pre-setup (bootstrap): no token exists yet → placeholder, has_token false.
+    app = make_app(tmp_path, monkeypatch, bootstrap="boot-1")
+    async with client(app) as ac:
+        await ac.post("/api/login", json={"bootstrap": "boot-1"})
+        assert (await ac.get("/api/connect")).json()["has_token"] is False
+
+
+async def test_session_reports_import_dir(tmp_path, monkeypatch):
+    # cmd_console advertises the folder name via CONSOLE_IMPORT_NAME so the wizard can show it.
+    monkeypatch.setenv("CONSOLE_IMPORT_NAME", "mydocs")
+    app = make_app(tmp_path, monkeypatch, bootstrap="boot-1")
+    async with client(app) as ac:
+        assert (await ac.get("/api/session")).json()["import_dir"] == "mydocs"

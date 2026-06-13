@@ -22,13 +22,21 @@ export function Connect() {
           </div>
           <div className="card mt-4">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="font-semibold">Codex config</h2>
-              <CopyButton text={conn.data?.codex_toml || ""} label="Copy TOML" />
+              <h2 className="font-semibold">Add to Codex</h2>
+              <CopyButton text={conn.data?.codex_cmd || ""} label="Copy command" />
             </div>
-            <Pre text={conn.data?.codex_toml || ""} />
-            <p className="mt-2 text-sm text-muted">
-              Mint a scoped token on the <a href="/tokens">Tokens</a> page and paste it as the bearer token.
-            </p>
+            <Pre text={conn.data?.codex_cmd || ""} />
+            {conn.data?.has_token ? (
+              <p className="mt-2 text-sm text-muted">
+                Ready to run — the token is already filled in. Paste these two lines into your
+                terminal, then run <code className="mono">codex</code> and{" "}
+                <code className="mono">/mcp</code> to confirm it connected.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-muted">
+                Finish the setup wizard first — it mints the token that gets filled in here.
+              </p>
+            )}
           </div>
         </>
       )}

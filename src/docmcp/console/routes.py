@@ -102,6 +102,9 @@ class Console:
         }
         if sess:
             out.update(user=sess.get("user"), role=sess.get("role"), csrf=sess.get("csrf"))
+        # The folder cmd_console was pointed at (if any) — so the wizard can tell the user it will
+        # be imported + indexed during setup.
+        out["import_dir"] = (os.environ.get("CONSOLE_IMPORT_NAME") or "").strip() or None
         return _json(out)
 
     # -- reads (Docker-backed text) ------------------------------------------
@@ -321,6 +324,12 @@ class Console:
             except ValidationError as exc:
                 return _json({"error": str(exc)}, 400)
             env = dict(os.environ, DOCMCP_OPENAI_API_KEY=key)
+        # Import the folder the operator pointed cmd_console at (CONSOLE_IMPORT_DIR) as part of the
+        # deploy, so first-run setup actually indexes a corpus. The path comes from trusted server
+        # env (set at launch), never from the browser; the client only opts out via import=false.
+        docs = None
+        if body.get("import", True):
+            docs = (os.environ.get("CONSOLE_IMPORT_DIR") or "").strip() or None
         try:
             job = self._start_job(
                 sess,
@@ -334,6 +343,7 @@ class Console:
                 domain=body.get("domain"),
                 portal=bool(body.get("portal")),
                 schedule=body.get("schedule"),
+                docs=docs,
             )
         except ValidationError as exc:
             return _json({"error": str(exc)}, 400)
@@ -398,17 +408,17 @@ class Console:
     async def connect(self, request: Request) -> Response:
         if not self.auth.require(request, admin=False):
             return _json({"error": "unauthorized"}, 401)
-        domain = os.environ.get("DOMAIN", "").strip()
-        http_port = os.environ.get("HTTP_PORT", "80").strip() or "80"
-        if domain and not domain.startswith(":"):
-            url = f"https://{domain}/mcp"
-        elif http_port == "80":
-            url = "http://localhost/mcp"
-        else:
-            url = f"http://localhost:{http_port}/mcp"
-        codex_toml = (
-            "[mcp_servers.docs]\n"
-            f'url = "{url}"\n'
-            'bearer_token = "tok_…"   # paste a token minted on the Tokens page\n'
+        # URL from the DEPLOYED .env (right port/domain), not the console's stale launch env.
+        url = reads.public_mcp_url(self.settings)
+        # Embed the whole-corpus token minted at setup so the command is ready to run — no minting
+        # or looking it up. The doc MCP server is read-only, so this grants reads of the corpus;
+        # the token's write scope only matters to the upload portal. None only before setup.
+        token = reads.client_bearer_token(self.settings)
+        bearer = token or "<paste your tok_… token>"
+        # The maintainer-endorsed Codex wiring (same as the deploy prints): register over HTTP with
+        # the token via env var — `codex mcp add` writes the config, so there's nothing to hand-edit.
+        codex_cmd = (
+            f"export DOCS_MCP_TOKEN={bearer}\n"
+            f"codex mcp add docs --url {url} --bearer-token-env-var DOCS_MCP_TOKEN"
         )
-        return _json({"url": url, "codex_toml": codex_toml})
+        return _json({"url": url, "codex_cmd": codex_cmd, "has_token": bool(token)})

@@ -150,6 +150,21 @@ def valid_build_target(target: str) -> str:
     return target
 
 
+def valid_import_dir(path: str) -> str:
+    """A filesystem path to stage + ingest during setup. This is NOT request input — it is set by
+    ``cmd_console`` (from the operator's ``--docs`` / menu prompt) and read from the
+    ``CONSOLE_IMPORT_DIR`` env var. We still validate it: absolute, no control chars / leading
+    dash (so the deploy script can't misread it as a flag), and present on disk (cmd_console mounts
+    it into this container)."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValidationError("import dir must be an absolute path")
+    if any(c in path for c in "\x00\n\r"):
+        raise ValidationError("import dir contains control characters")
+    if not Path(path).exists():
+        raise ValidationError(f"import dir not found: {path}")
+    return path
+
+
 def valid_schedule(spec: str) -> str:
     if not isinstance(spec, str):
         raise ValidationError("schedule must be a string")
@@ -367,11 +382,16 @@ def _wizard(
     domain=None,
     portal: bool = False,
     schedule: str | None = None,
+    docs: str | None = None,
 ) -> list[str]:
     """Drive the non-interactive deploy wizard (``--yes``). Vector search is enabled by
     the deploy script when an OpenAI key is present; the route passes that key via the
     ``DOCMCP_OPENAI_API_KEY`` env var (NOT argv, so it never appears in the process list),
-    so this builder emits no ``--vector-key`` and no key value at all."""
+    so this builder emits no ``--vector-key`` and no key value at all.
+
+    ``docs`` (the operator's ``CONSOLE_IMPORT_DIR``, if any) is passed as ``--docs`` so the
+    deploy stages + ingests that folder in the same run — the first-run setup indexes the
+    corpus instead of leaving an empty store the user must ingest separately."""
     valid_profile(profile)
     argv = [deploy_script(profile), "--yes"]
     if profile == "local":
@@ -391,6 +411,8 @@ def _wizard(
         argv += ["--domain", valid_domain(domain)]
     if portal:
         argv.append("--portal")
+    if docs:
+        argv += ["--docs", valid_import_dir(docs)]
     if schedule:
         argv += ["--schedule", valid_schedule(schedule)]
     return argv

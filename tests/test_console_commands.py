@@ -94,6 +94,26 @@ def test_lifecycle_argv():
         c.build("build", target="; rm")
 
 
+def test_wizard_imports_docs_dir(tmp_path):
+    # The setup wizard stages + ingests the operator's folder in the same run via --docs.
+    d = tmp_path / "mydocs"
+    d.mkdir()
+    assert c.build("wizard", profile="local", docs=str(d)) == [
+        "/repo/local_deploy.sh", "--yes", "--docs", str(d),
+    ]
+    # no docs → no --docs flag
+    assert "--docs" not in c.build("wizard", profile="local")
+
+
+def test_import_dir_validator(tmp_path):
+    d = tmp_path / "ok"
+    d.mkdir()
+    assert c.valid_import_dir(str(d)) == str(d)
+    for bad in ["relative/path", "/nope/does/not/exist/xyzzy", "-/x", "/a\nb", "~/docs"]:
+        with pytest.raises(ValidationError):
+            c.valid_import_dir(bad)
+
+
 # --------------------------------------------------------------------------- #
 # scalar validators
 def test_expires_validator():

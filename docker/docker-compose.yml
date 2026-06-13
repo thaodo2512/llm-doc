@@ -13,7 +13,10 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: server
-    image: docs-mcp:server
+    # Default = the slim keyword-only image. When ENABLE_VECTOR=true, `docmcp.sh serve`
+    # exports DOCS_MCP_IMAGE=docs-mcp:server-vector so query-time semantic_search has its
+    # offline embedder + qdrant-client (the slim image has neither). Falls back to slim.
+    image: ${DOCS_MCP_IMAGE:-docs-mcp:server}
     restart: unless-stopped
     env_file:
       - path: ../.env
@@ -27,6 +30,12 @@ services:
       DOCSTORE_ROOT: /srv/docs
       TOKENS_FILE: /srv/tokens.json
       FTS5_DB: /srv/docs/index.sqlite
+      # Vector/semantic search (query-time embedding runs IN this server process — needs the
+      # server-vector image). Model-intrinsic settings (dim/pooling/prefixes/model_dir) are
+      # baked into that image; .env can still override them via env_file.
+      ENABLE_VECTOR: ${ENABLE_VECTOR:-false}
+      QDRANT_URL: http://qdrant:6333
+      EMBED_BACKEND: ${EMBED_BACKEND:-local}
     volumes:
       - docstore:/srv/docs:ro
       # tokens.json lives OUTSIDE the read-only docstore mount (can't create a
@@ -78,10 +87,17 @@ services:
       DOC_ROOT: /srv/docs/curated
       DOCSTORE_ROOT: /srv/docs        # index/manifest/status/lock written here (rw)
       FTS5_DB: /srv/docs/index.sqlite
+      # Parallel parse fan-out. Default 1 (sequential) for a bare `compose run`; the
+      # `docmcp.sh ingest` wrapper auto-sets this to a CPU-derived value so the slow
+      # Docling/tree-sitter parse runs across worker processes. Override in .env.
+      INGEST_WORKERS: ${INGEST_WORKERS:-1}
       # DOCLING_ARTIFACTS_PATH is baked into the ingest image — the vendored models
       # are COPY'd to /opt/docling/models at build time. Deliberately NOT mounting a
       # volume there: a named-volume mount would shadow the in-image vendored models.
       QDRANT_URL: http://qdrant:6333
+      # Offline embedding (used when ENABLE_VECTOR=true). Model-intrinsic settings are baked
+      # into the ingest image at /opt/models/embed; .env can override via env_file.
+      EMBED_BACKEND: ${EMBED_BACKEND:-local}
     volumes:
       - ../raw:/srv/raw:ro          # mount your raw sources here
       - docstore:/srv/docs          # writes curated/ + index + index.sqlite

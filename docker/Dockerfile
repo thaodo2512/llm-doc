@@ -74,6 +74,19 @@ RUN if find /opt/docling/models -type f -empty | grep -q .; then \
         find /opt/docling/models -type f -empty | sed 's,^/opt/docling/models/,  models/,' >&2; \
         exit 1; \
     fi
+# Offline embedding model for vector ingest. Pinned to a STABLE path that is identical in
+# the server-vector image, so EMBED_MODEL_DIR=/opt/models/embed works everywhere (and is
+# robust to .env). The bytes are already verified by the models/ guards above (the embed
+# model lives under /opt/docling/models too); this is just the canonical embed location.
+COPY models/bge-small-en-v1.5 /opt/models/embed
+# Model-intrinsic embedding config baked in (so .env never needs spaced values, which the
+# shell-sourced .env can't hold unquoted). bge-small-en-v1.5: 384-dim, CLS pooling, query
+# instruction prefix; passages unprefixed. Override at runtime only to swap models.
+ENV EMBED_MODEL_DIR=/opt/models/embed \
+    EMBED_DIM=384 \
+    EMBED_POOLING=cls \
+    EMBED_QUERY_PREFIX="Represent this sentence for searching relevant passages: " \
+    EMBED_PASSAGE_PREFIX=""
 # OpenCV (pulled in by Docling's tableformer model) needs these native libraries
 # at runtime; the slim base lacks them, so `import cv2` fails with
 # "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as
@@ -95,3 +108,36 @@ FROM server AS console
 COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker:27-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
 CMD ["docmcp-console"]
+
+# --------------------------------------------------------------------------- #
+# Serving image WITH query-time vector search: the slim server PLUS qdrant-client and a
+# FULLY OFFLINE ONNX embedder (onnxruntime + tokenizers), plus ONLY the embedding model
+# (NOT the heavy Docling/OCR weights). Used as the docs-mcp image when ENABLE_VECTOR=true;
+# the plain `server` target stays the default for keyword-only deployments. No external
+# network at runtime — query embedding happens in-process from the baked model.
+FROM server AS server-vector
+RUN pip install ".[vector]"
+COPY models/bge-small-en-v1.5 /opt/models/embed
+# HF offline (defensive — the local embedder never calls the Hub) + the model-intrinsic
+# embedding config baked in (matches the ingest image; keeps spaced values out of .env).
+ENV HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1 \
+    EMBED_MODEL_DIR=/opt/models/embed \
+    EMBED_DIM=384 \
+    EMBED_POOLING=cls \
+    EMBED_QUERY_PREFIX="Represent this sentence for searching relevant passages: " \
+    EMBED_PASSAGE_PREFIX=""
+# Same offline integrity guards as the ingest image: fail the build on an un-materialized
+# Git LFS pointer or an empty (partial-pull) weight file, rather than shipping an image
+# whose embedder dies at query time.
+RUN if grep -rIl 'git-lfs.github.com/spec' /opt/models/embed >/dev/null 2>&1; then \
+        echo 'ERROR: embedding model has un-materialized Git LFS pointers — run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        grep -rIl 'git-lfs.github.com/spec' /opt/models/embed 2>/dev/null | sed 's,^/opt/models/embed/,  models/bge-small-en-v1.5/,' >&2; \
+        exit 1; \
+    fi
+RUN if find /opt/models/embed -type f -empty | grep -q .; then \
+        echo 'ERROR: embedding model has empty (0-byte) files — incomplete git lfs pull. Run "git lfs install && git lfs pull" before building.' >&2; \
+        exit 1; \
+    fi
+CMD ["docmcp-server"]

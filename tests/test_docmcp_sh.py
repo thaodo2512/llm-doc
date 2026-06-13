@@ -43,6 +43,38 @@ def test_backup_caddy_lookup_tolerates_no_volume():
     assert "grep -E 'caddy_data$' | head -1 || true" in body
 
 
+def test_build_and_serve_wire_the_vector_serving_image():
+    # Query-time semantic_search runs IN the server process, but the slim server has no
+    # embedder/qdrant-client — so vector serving uses a dedicated server-vector image.
+    build = _body("cmd_build")
+    assert "--target server-vector" in build  # built via docker build --target
+    assert "SERVER_VECTOR_IMAGE" in build
+    assert "check_lfs_models" in build  # the embedding model is Git-LFS vendored
+    serve = _body("cmd_serve")
+    assert "DOCS_MCP_IMAGE" in serve  # docs-mcp is swapped to the vector image when enabled
+    assert "SERVER_VECTOR_IMAGE" in serve
+    assert "wait_for_qdrant" in serve  # qdrant is ready before the server serves queries
+
+
+def test_ingest_sizes_workers_from_vm_resources():
+    # Parallel parse must be sized from the Docker VM's REAL cpu+ram (not the host's, and
+    # not a blind min(cpu,4) that OOMs a small VM at best quality), and thread-pinned so N
+    # workers don't oversubscribe the cores.
+    body = _body("cmd_ingest")
+    assert "INGEST_WORKERS" in body
+    assert "'{{.NCPU}}'" in body and "'{{.MemTotal}}'" in body  # cpu + memory aware, from the VM
+    assert "OMP_NUM_THREADS" in body  # per-worker thread pin
+
+
+def test_doctor_treats_per_file_skips_as_a_note_not_a_failure():
+    # A few unreadable/unsupported files (encrypted PDF, binaries) must NOT mark the whole
+    # deploy unhealthy — they're reported as a note. Only a truly empty index is a FAIL
+    # (systemic model breakage is caught separately by the models/ingest-image checks).
+    body = _body("cmd_doctor")
+    assert "unreadable" in body and "skipped (unsupported type)" in body
+    assert "if n == 0:" in body  # the only ingest-result condition that still FAILs the index
+
+
 def test_doctor_fails_on_missing_or_empty_tokens():
     # MEDIUM follow-up: a missing/empty tokens.json means nobody can authenticate — the
     # verifier reports it as {} (0 tokens), so doctor must treat that as unhealthy.

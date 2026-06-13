@@ -12,6 +12,7 @@ an anchored prefix match).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 from .. import rbac
@@ -25,12 +26,16 @@ COLLECTION = "docmcp_chunks"
 class Embedder(Protocol):
     dim: int
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], *, prefix: str = "") -> list[list[float]]:
         ...
 
 
 class OpenAIEmbedder:
-    """Embeds via the OpenAI API (`text-embedding-3-small` -> 1536 dims)."""
+    """Embeds via the OpenAI API (`text-embedding-3-small` -> 1536 dims).
+
+    The LEGACY ONLINE backend (EMBED_BACKEND=openai). Makes external API calls, so it is
+    NOT usable in an air-gapped deployment — see LocalOnnxEmbedder for the offline default.
+    """
 
     def __init__(self, settings: Settings):
         from openai import OpenAI
@@ -39,7 +44,8 @@ class OpenAIEmbedder:
         self.model = settings.openai_embed_model
         self.dim = 1536
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], *, prefix: str = "") -> list[list[float]]:
+        # `prefix` is a local-model concept (e5/bge instructions); OpenAI ignores it.
         if not texts:
             return []
         # OpenAI allows up to 2048 inputs per request; batch to be safe.
@@ -48,6 +54,99 @@ class OpenAIEmbedder:
             resp = self._client.embeddings.create(model=self.model, input=texts[i : i + 512])
             out.extend(item.embedding for item in resp.data)
         return out
+
+
+def _find_onnx(model_dir: Path) -> Path:
+    """Locate the ONNX weights in a vendored model dir. Prefer a quantized export
+    (smaller + faster on CPU); fall back to the standard name, then any ``*.onnx``."""
+    candidates = [
+        model_dir / "model_quantized.onnx",
+        model_dir / "onnx" / "model_quantized.onnx",
+        model_dir / "model.onnx",
+        model_dir / "onnx" / "model.onnx",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    found = sorted(model_dir.rglob("*.onnx"))
+    if found:
+        return found[0]
+    raise FileNotFoundError(f"no .onnx model found under {model_dir}")
+
+
+class LocalOnnxEmbedder:
+    """Offline embeddings: onnxruntime (CPU) + HuggingFace ``tokenizers``. No torch, no
+    network — the default backend, safe for an air-gapped deployment.
+
+    Loads a vendored ONNX sentence-embedding model + its ``tokenizer.json``, runs the
+    encoder, pools the token states (CLS for BGE, mean for MiniLM/e5 — set by
+    ``EMBED_POOLING``), and L2-normalizes so cosine search in Qdrant behaves as intended.
+    All heavy imports are lazy so importing this module never forces onnxruntime/tokenizers.
+    """
+
+    def __init__(self, settings: Settings):
+        import numpy as np
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        self._np = np
+        model_dir = Path(settings.embed_model_dir).expanduser()
+        tok_path = model_dir / "tokenizer.json"
+        if not tok_path.is_file():
+            raise FileNotFoundError(
+                f"embedding tokenizer not found at {tok_path} — is EMBED_MODEL_DIR correct and "
+                "the model vendored/baked? (see models/bge-small-en-v1.5/README.md)"
+            )
+        onnx_path = _find_onnx(model_dir)
+        self._tok = Tokenizer.from_file(str(tok_path))
+        self._tok.enable_truncation(max_length=512)
+        self._tok.enable_padding()  # pad to the longest sequence in each batch
+        self._sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        self._inputs = {i.name for i in self._sess.get_inputs()}
+        self._pooling = settings.embed_pooling
+        self.dim = settings.embed_dim
+        # Fail fast on a dim/model mismatch BEFORE it poisons the Qdrant collection.
+        probe = self.embed(["probe"])
+        got = len(probe[0]) if probe else 0
+        if got != self.dim:
+            raise ValueError(
+                f"EMBED_DIM={self.dim} but the model at {onnx_path} produced {got}-dim vectors"
+            )
+
+    def embed(self, texts: list[str], *, prefix: str = "") -> list[list[float]]:
+        if not texts:
+            return []
+        np = self._np
+        out: list[list[float]] = []
+        for i in range(0, len(texts), 64):  # CPU-friendly batch size
+            batch = texts[i : i + 64]
+            if prefix:
+                batch = [prefix + text for text in batch]
+            encs = self._tok.encode_batch(batch)
+            mask = np.array([e.attention_mask for e in encs], dtype=np.int64)
+            feeds: dict = {
+                "input_ids": np.array([e.ids for e in encs], dtype=np.int64),
+                "attention_mask": mask,
+            }
+            if "token_type_ids" in self._inputs:
+                feeds["token_type_ids"] = np.array([e.type_ids for e in encs], dtype=np.int64)
+            feeds = {k: v for k, v in feeds.items() if k in self._inputs}
+            hidden = np.asarray(self._sess.run(None, feeds)[0], dtype=np.float32)  # (B, S, H)
+            if self._pooling == "mean":
+                m = mask[:, :, None].astype(np.float32)
+                pooled = (hidden * m).sum(axis=1) / np.clip(m.sum(axis=1), 1e-9, None)
+            else:  # "cls" — BGE/most BERT retrieval models pool the [CLS] token
+                pooled = hidden[:, 0, :]
+            norms = np.clip(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12, None)
+            out.extend((pooled / norms).tolist())
+        return out
+
+
+def make_embedder(settings: Settings) -> Embedder:
+    """Select the embedder: offline local ONNX (default) or the legacy OpenAI API."""
+    if (settings.embed_backend or "local").lower() == "openai":
+        return OpenAIEmbedder(settings)
+    return LocalOnnxEmbedder(settings)
 
 
 def _qdrant(settings: Settings):
@@ -102,7 +201,7 @@ def embed_and_upsert(
         VectorParams,
     )
 
-    embedder = embedder or OpenAIEmbedder(settings)
+    embedder = embedder or make_embedder(settings)
     client = _qdrant(settings)
 
     records: list[tuple[str, int, int, str]] = []  # path, chunk_id, start_line, text
@@ -114,9 +213,12 @@ def embed_and_upsert(
         for chunk_id, (start_line, chunk) in enumerate(_chunk_lines(text, settings.embed_chunk_tokens)):
             records.append((entry.path, chunk_id, start_line, chunk))
 
+    # Passages embed with the model's passage prefix (empty for BGE/OpenAI).
     vectors: list[list[float]] = []
     for i in range(0, len(records), 256):
-        vectors.extend(embedder.embed([r[3] for r in records[i : i + 256]]))
+        vectors.extend(
+            embedder.embed([r[3] for r in records[i : i + 256]], prefix=settings.embed_passage_prefix)
+        )
 
     if client.collection_exists(collection):
         client.delete_collection(collection)
@@ -152,7 +254,7 @@ class VectorSearch(SearchBackend):
     ):
         self.settings = settings
         self.collection = collection
-        self.embedder = embedder or OpenAIEmbedder(settings)
+        self.embedder = embedder or make_embedder(settings)
         self.client = _qdrant(settings)
 
     def search(self, query: str, allowed_prefixes: list[str], limit: int = 10) -> list[Hit]:
@@ -161,7 +263,9 @@ class VectorSearch(SearchBackend):
             return []
         from qdrant_client.models import FieldCondition, Filter, MatchAny
 
-        vector = self.embedder.embed([query])[0]
+        # The query embeds with the model's QUERY prefix (e.g. BGE's retrieval instruction);
+        # passages were embedded with the passage prefix at ingest — asymmetric retrieval.
+        vector = self.embedder.embed([query], prefix=self.settings.embed_query_prefix)[0]
 
         normalized = ["/" + p.strip().strip("/") for p in allowed_prefixes]
         unrestricted = "/" in normalized  # "/" => whole tree

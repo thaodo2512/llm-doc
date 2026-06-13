@@ -1,0 +1,9 @@
+# Embedding model weights go to Git LFS; keep the tokenizer/config/vocab as PLAIN TEXT
+# so they always materialize as real files (tokenizers.Tokenizer.from_file + onnxruntime
+# read them directly) — even on a clone before `git lfs pull`. This overrides the root
+# `.gitattributes` rule `models/** filter=lfs` for these small text files.
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.json !filter !diff !merge text
+*.txt !filter !diff !merge text

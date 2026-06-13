@@ -25,6 +25,8 @@ except ImportError:  # pragma: no cover
 
 
 VALID_BACKENDS = {"ripgrep", "fts5"}
+VALID_EMBED_BACKENDS = {"local", "openai"}
+VALID_POOLINGS = {"cls", "mean"}
 
 
 def _split_csv(value: str) -> list[str]:
@@ -44,6 +46,13 @@ def _as_int(value: str, *, name: str, minimum: int, maximum: int | None = None) 
         bound = f">= {minimum}" if maximum is None else f"in [{minimum}, {maximum}]"
         raise ValueError(f"{name} must be {bound}, got {result}")
     return result
+
+
+def _validated_choice(value: str, valid: set[str], *, name: str) -> str:
+    v = value.strip().lower()
+    if v not in valid:
+        raise ValueError(f"{name} must be one of {sorted(valid)}, got {value!r}")
+    return v
 
 
 def _redact_url(url: str) -> str:
@@ -85,6 +94,24 @@ class Settings:
     max_search_limit: int = 50  # clamp for search_docs / semantic_search `limit`
     max_read_bytes: int = 1_048_576  # most bytes read_doc will pull off disk in one call
     max_read_lines: int = 5000  # most lines read_doc will return in one call
+
+    # Ingest parallelism. Default 1 = in-process sequential (deterministic; what the
+    # test suite and any monkeypatching caller rely on). The real ingest wrapper
+    # (docmcp.sh ingest) sets INGEST_WORKERS to a CPU-derived value so the expensive
+    # Docling/tree-sitter parse fans out across worker processes. See ingest.pipeline.
+    ingest_workers: int = 1
+
+    # Embedding backend for vector/semantic search (only consulted when enable_vector).
+    # "local" = offline ONNX model run in-process (no network — the default, honours an
+    # air-gapped deployment); "openai" = legacy online API. The dim/pooling/prefixes MUST
+    # match the chosen model (see models/bge-small-en-v1.5/README.md). Changing the backend
+    # or dim requires a full re-ingest (the Qdrant collection is rebuilt at embedder.dim).
+    embed_backend: str = "local"
+    embed_model_dir: str = "/opt/models/embed"
+    embed_dim: int = 384
+    embed_pooling: str = "cls"  # "cls" (BGE) | "mean" (MiniLM / e5)
+    embed_query_prefix: str = ""
+    embed_passage_prefix: str = ""
 
     # Optional upload/manage portal (a WRITE surface; OFF by default). Defaulted for
     # easy direct construction; Settings.load() sets them from the environment.
@@ -178,6 +205,19 @@ class Settings:
             max_read_lines=_as_int(
                 env.get("MAX_READ_LINES", "5000"), name="MAX_READ_LINES", minimum=1
             ),
+            ingest_workers=_as_int(
+                env.get("INGEST_WORKERS", "1"), name="INGEST_WORKERS", minimum=1, maximum=64
+            ),
+            embed_backend=_validated_choice(
+                env.get("EMBED_BACKEND", "local"), VALID_EMBED_BACKENDS, name="EMBED_BACKEND"
+            ),
+            embed_model_dir=env.get("EMBED_MODEL_DIR", "/opt/models/embed"),
+            embed_dim=_as_int(env.get("EMBED_DIM", "384"), name="EMBED_DIM", minimum=1),
+            embed_pooling=_validated_choice(
+                env.get("EMBED_POOLING", "cls"), VALID_POOLINGS, name="EMBED_POOLING"
+            ),
+            embed_query_prefix=env.get("EMBED_QUERY_PREFIX", ""),
+            embed_passage_prefix=env.get("EMBED_PASSAGE_PREFIX", ""),
             portal_enabled=_as_bool(env.get("PORTAL_ENABLED", "false")),
             session_secret=env.get("SESSION_SECRET", ""),
             staging_root=(

@@ -96,12 +96,16 @@ def test_manifest_and_status_record_results(ingested):
     assert all("indexed_at" in rec for rec in manifest.values())
 
     status = json.loads(ingested.ingest_status_file.read_text())
-    assert status["schema"] == 1
+    assert status["schema"] == 2
     assert status["failed"] == 0
     assert status["indexed_count"] == sum(
         1 for r in manifest.values() if r.get("status") == "indexed"
     )
     assert "duration_s" in status
+    # schema 2 surfaces the skip breakdown so the console can report it cleanly.
+    assert status["unsupported"] == 0
+    assert status["skipped_unsupported"] == {}
+    assert "workers" in status
 
 
 def test_failed_source_is_recorded_not_indexed(settings_factory, tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ COMPOSE_FILE="$ROOT/docker/docker-compose.yml"
 PROJECT="docs-mcp"                 # compose `name:` — prefixes the network/volumes
 SERVER_IMAGE="docs-mcp:server"
 INGEST_IMAGE="docs-mcp:ingest"     # heavy build-path image (bakes models/ at build time)
+SERVER_VECTOR_IMAGE="docs-mcp:server-vector"  # slim server + offline ONNX embedder + qdrant-client (vector serving)
 NET="${PROJECT}_default"           # compose default network
 DOCSTORE_VOL="${PROJECT}_docstore" # named volume holding the curated store + index
 
@@ -51,6 +52,17 @@ need_docker() {
 load_env() { if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi; }
 
 is_true() { case "${1:-}" in true|TRUE|True|1|yes|on) return 0;; *) return 1;; esac; }
+
+# Online CPU count, portable across Linux (nproc/getconf) and macOS (sysctl). Falls
+# back to 2 if nothing answers. Used to size the parallel ingest parse.
+_cpu_count() {
+  local n=""
+  if command -v nproc >/dev/null 2>&1; then n="$(nproc 2>/dev/null || true)"
+  elif command -v getconf >/dev/null 2>&1; then n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  elif command -v sysctl >/dev/null 2>&1; then n="$(sysctl -n hw.ncpu 2>/dev/null || true)"; fi
+  case "$n" in ''|*[!0-9]*) n=2 ;; esac
+  printf '%s' "$n"
+}
 
 # Echo the browser-opener command for THIS host, or nothing when none is usable: macOS `open`,
 # WSL `wslview`/`explorer.exe` (opens the Windows browser), Linux desktop `xdg-open` — but only
@@ -426,9 +438,43 @@ cmd_ingest() {
     dc --profile vector up -d qdrant
     wait_for_qdrant
   fi
+  # Size the parallel parse from the Docker VM's REAL resources (not the host's) unless the
+  # operator pinned INGEST_WORKERS. Docling is both CPU-heavy (it already multithreads per
+  # file) AND memory-heavy (a best-quality worker can peak around several GB), so cap by BOTH:
+  # ~1 worker per 3 vCPUs and ~1 per 3 GiB, leaving headroom — so a big server scales up while
+  # a small laptop VM never OOMs. Then pin each worker's math-library threads to vCPUs/workers
+  # so N workers can't oversubscribe the cores (which thrashes and is slower than sequential).
+  local _vcpu _vmem_b _vmem_gib _by_cpu _by_mem
+  _vcpu="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"; case "$_vcpu" in ''|*[!0-9]*) _vcpu="$(_cpu_count)" ;; esac
+  _vmem_b="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"; case "$_vmem_b" in ''|*[!0-9]*) _vmem_b=0 ;; esac
+  _vmem_gib=$(( _vmem_b / 1073741824 ))
+  if [ -z "${INGEST_WORKERS:-}" ]; then
+    _by_cpu=$(( _vcpu / 3 )); [ "$_by_cpu" -ge 1 ] || _by_cpu=1
+    # A best-quality Docling worker (layout + table-structure + OCR models, plus per-page
+    # tensors) can peak around ~5 GiB, so reserve ~5 GiB each + ~2 GiB headroom. On a small
+    # VM this correctly lands on 1 worker — measured: 2 workers OOM-kill a ~7.6 GiB VM and
+    # produce nothing — while a big box still scales up.
+    if [ "$_vmem_gib" -ge 12 ]; then _by_mem=$(( (_vmem_gib - 2) / 5 )); else _by_mem=1; fi
+    [ "$_by_mem" -ge 1 ] || _by_mem=1
+    INGEST_WORKERS="$_by_cpu"; [ "$_by_mem" -lt "$INGEST_WORKERS" ] && INGEST_WORKERS="$_by_mem"
+    [ "$INGEST_WORKERS" -gt 8 ] && INGEST_WORKERS=8
+    [ "$INGEST_WORKERS" -ge 1 ] || INGEST_WORKERS=1
+    info "parsing with $INGEST_WORKERS worker(s) — auto from ${_vcpu} vCPU / ${_vmem_gib} GiB (set INGEST_WORKERS to override)"
+  else
+    info "parsing with $INGEST_WORKERS worker(s) (from INGEST_WORKERS)"
+  fi
+  export INGEST_WORKERS
+  # Thread-pin so workers don't fight over cores (Docling/torch otherwise grab them all per file).
+  local _eflags=(-e "INGEST_WORKERS=$INGEST_WORKERS")
+  if [ -z "${OMP_NUM_THREADS:-}" ]; then
+    local _thr=$(( _vcpu / INGEST_WORKERS )); [ "$_thr" -ge 1 ] || _thr=1
+    _eflags+=(-e "OMP_NUM_THREADS=$_thr" -e "OPENBLAS_NUM_THREADS=$_thr" -e "MKL_NUM_THREADS=$_thr")
+  else
+    _eflags+=(-e "OMP_NUM_THREADS=$OMP_NUM_THREADS")
+  fi
   info "Ingesting raw/ → curated store"
   warn "the first ingest builds the ingestion image (installs Docling/torch wheels) — several minutes; the models are vendored in the repo, so none are downloaded"
-  dc "${profiles[@]}" run --rm ingest "$@"
+  dc "${profiles[@]}" run --rm "${_eflags[@]}" ingest "$@"
   if is_running docs-mcp; then
     dc restart docs-mcp >/dev/null && info "reloaded the running server (new docs are live)"
   fi
@@ -468,7 +514,19 @@ cmd_serve() {
            fi ;;
        esac ;;
   esac
-  is_true "${ENABLE_VECTOR:-false}" && dc --profile vector up -d qdrant
+  if is_true "${ENABLE_VECTOR:-false}"; then
+    # Serve the vector-capable image so query-time semantic_search has its OFFLINE embedder
+    # + qdrant-client (the slim server image has neither). Build it on demand if missing,
+    # then export DOCS_MCP_IMAGE so compose runs docs-mcp from it.
+    if ! docker image inspect "$SERVER_VECTOR_IMAGE" >/dev/null 2>&1; then
+      info "building the vector serving image ($SERVER_VECTOR_IMAGE) — one-time…"
+      check_lfs_models
+      docker build -t "$SERVER_VECTOR_IMAGE" --target server-vector -f "$ROOT/docker/Dockerfile" "$ROOT"
+    fi
+    export DOCS_MCP_IMAGE="$SERVER_VECTOR_IMAGE"
+    dc --profile vector up -d qdrant
+    wait_for_qdrant
+  fi
   info "Starting the server + reverse proxy…"
   dc up -d docs-mcp caddy
   if is_true "${PORTAL_ENABLED:-false}"; then
@@ -524,8 +582,12 @@ cmd_build() {
   case "${1:-server}" in
     server) dc build docs-mcp ;;
     ingest) check_lfs_models; dc --profile ingest build ingest ;;
-    all)    check_lfs_models; dc build docs-mcp && dc --profile ingest build ingest ;;
-    *)      die "usage: ./docmcp.sh build [server|ingest|all]" ;;
+    # Vector serving image. Built via `docker build --target` (the compose docs-mcp service
+    # pins target=server); check_lfs_models because the embedding model is Git-LFS vendored.
+    server-vector) check_lfs_models; docker build -t "$SERVER_VECTOR_IMAGE" --target server-vector -f "$ROOT/docker/Dockerfile" "$ROOT" ;;
+    all)    check_lfs_models; dc build docs-mcp; dc --profile ingest build ingest
+            if is_true "${ENABLE_VECTOR:-false}"; then docker build -t "$SERVER_VECTOR_IMAGE" --target server-vector -f "$ROOT/docker/Dockerfile" "$ROOT"; fi ;;
+    *)      die "usage: ./docmcp.sh build [server|ingest|server-vector|all]" ;;
   esac
 }
 
@@ -1209,10 +1271,21 @@ st = os.path.join(root, "ingest-status.json")
 extra = ""
 if os.path.exists(st):
     s = json.load(open(st))
-    extra = " | last ingest %s, failed=%s" % (
-        time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("finished_at", 0))), s.get("failed", "?"))
+    extra = " | last ingest %s" % time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("finished_at", 0)))
+    # Per-file skips are NOT a health failure: an encrypted/corrupt file or a binary we
+    # cannot index is expected in any real corpus, so it is reported, not a broken deploy.
+    # A SYSTEMIC failure (e.g. broken vendored models making every PDF fail) is caught
+    # separately by the models / ingest-image checks below. Surface the counts as a note.
+    notes = []
+    if s.get("unsupported"):
+        notes.append("%d skipped (unsupported type)" % s["unsupported"])
     if s.get("failed"):
-        print("%d docs, %d FAILED last ingest%s" % (n, s["failed"], extra)); sys.exit(1)
+        notes.append("%d unreadable (e.g. encrypted/corrupt; details in ingest-status.json)" % s["failed"])
+    if notes:
+        extra += " - " + ", ".join(notes)
+# A valid index with zero docs (when sources exist) is the real failure; per-file skips are not.
+if n == 0:
+    print("0 docs indexed - nothing parsed%s" % extra); sys.exit(1)
 print("%d docs%s" % (n, extra))
 PY
     )"; then _dck index 0 "$ix"; else _dck index 1 "${ix:-no/invalid index}"; fi

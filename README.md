@@ -5,7 +5,7 @@ to coding agents (e.g. OpenAI Codex) over **Streamable HTTP**, with per-user
 **bearer-token auth** and **path-prefix RBAC**. An offline ingestion pipeline turns mixed raw
 sources (PDFs, Office docs, HTML, Markdown, source code, and any other text file) into a curated Markdown doc store plus a
 search index. Primary retrieval is **keyword/full-text search** (ripgrep or SQLite FTS5); an
-optional **vector** layer (Qdrant + OpenAI embeddings) is built but **off by default**.
+optional **vector** layer (Qdrant + a vendored, fully-offline ONNX embedder) is built but **off by default**.
 
 ```
 Codex (laptop) --VPN--> internal network --HTTP + bearer token (raw IP)--> [ Caddy ] --> docs-mcp (FastMCP)
@@ -232,18 +232,26 @@ manages a crontab entry for you:
 It bakes in the right `docker` PATH and logs to `var/cron-ingest.log`. The job only fires while
 Docker is running (on a server `dockerd` is always up; on a Mac, Docker Desktop must be open).
 
-### Optional vector search
+### Optional vector (semantic) search — fully offline
+
+`semantic_search` lets an agent retrieve by *meaning*, not just keywords. It is **off by
+default** and, when on, runs **entirely on-prem with no external API**: embeddings come from
+a vendored ONNX model (`models/bge-small-en-v1.5`, English, 384-dim) run in-process via
+onnxruntime, and Qdrant is a local container. `EMBED_BACKEND=openai` is a legacy online
+alternative (opt-in: install `.[vector,vector-openai]`, set `OPENAI_API_KEY`).
 
 ```bash
-# in .env:  ENABLE_VECTOR=true  and  OPENAI_API_KEY=sk-...
-cd docker
-docker compose --profile vector up -d qdrant
-docker compose run --rm ingest --full     # embeds chunks into Qdrant
-docker compose up -d docs-mcp caddy
+# in .env:  ENABLE_VECTOR=true        (EMBED_BACKEND=local is the default — no API key)
+./docmcp.sh build server-vector       # serving image WITH the offline embedder + qdrant-client
+./docmcp.sh ingest --full             # embeds chunks into Qdrant (offline)
+./docmcp.sh serve                     # runs docs-mcp from the server-vector image + starts qdrant
 ```
 
-When `ENABLE_VECTOR=false` (default) `semantic_search` returns a clear disabled error and neither
-Qdrant nor OpenAI is contacted.
+Query embedding happens **inside the server process** (which is why vector serving uses the
+`server-vector` image — the slim default has no embedder). Switching the embedding
+backend/model/dim requires a full re-ingest (the Qdrant collection is rebuilt at the new
+vector size). When `ENABLE_VECTOR=false` (default), `semantic_search` returns a clear disabled
+error and neither Qdrant nor any embedder is contacted.
 
 ### Models (vendored — no download needed)
 

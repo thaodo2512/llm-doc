@@ -36,14 +36,41 @@ swapped) and is serialized by a cross-process lock, so a reader never sees a
 half-built index and two ingests can't race. The curated store is mounted **read
 only** by the server — only ingest writes it.
 
+**Large imports / slow ingest.** The expensive step is parsing (Docling for
+PDF/Office/images, tree-sitter for code) — and a few complex PDFs can each take
+minutes (layout + table-structure detection). `./docmcp.sh ingest` fans the parse out
+across worker processes, **auto-sized from the Docker VM's real CPU + RAM** (≈1 worker
+per 3 vCPUs and per 3 GiB, so it scales on a server but never OOMs a small VM), and
+pins each worker's math threads to `vCPUs/workers` so they don't oversubscribe the
+cores. Override with `INGEST_WORKERS` (in `.env` or the environment): raise it on a big
+box with spare RAM (each best-quality worker can peak at several GB), set `1` to force
+sequential. The run prints live `parsed N/total` progress and a final one-line summary.
+
 ## 2. Recover after a failed ingest
+
+First, know what counts as what. A normal run ends with a calm summary, e.g.:
+
+```
+[ingest] done in 142.0s — 113 document(s) indexed (113 new/changed).
+[ingest] skipped 19 file(s) we don't index (binary or unsupported type): .zip ×9, .mp4 ×2, …
+[ingest] 2 file(s) could not be read and were skipped (this is not a failure — everything else indexed fine):
+           • report.pdf — password-protected or encrypted
+```
+
+- **Skipped (unsupported)** — archives, video, binaries we can't extract text from.
+  Expected and harmless; they're reported, never indexed, and never an error.
+- **Could not be read** — a *supported* type that failed (encrypted/corrupt PDF, etc.).
+  Reported as a one-line reason; the underlying library's traceback is suppressed (set
+  `DOCMCP_INGEST_DEBUG=1` to see it). The run still completes and indexes everything else.
 
 ```bash
 ./docmcp.sh status          # shows last ingest time + failed count
 ./docmcp.sh doctor          # FAILS if the last ingest had failures or index is bad
 ```
 
-Per-file failures are recorded, not just logged. Inspect them:
+Per-file failures are recorded, not just logged. Inspect them (`failures[].reason` is
+the friendly cause; `failures[].error` keeps the raw error; `skipped_unsupported` is
+the by-extension skip tally):
 
 ```bash
 VOL="$(docker volume ls --format '{{.Name}}' | grep docstore | head -1)"

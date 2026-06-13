@@ -47,6 +47,7 @@ dev = [
 docmcp-server = "docmcp.server:main"
 docmcp-ingest = "docmcp.ingest.pipeline:main"
 docmcp-portal = "docmcp.portal.app:main"
+docmcp-console = "docmcp.console.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docmcp"]

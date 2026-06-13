@@ -1491,14 +1491,174 @@ _sched_status() {
   if [ "$found" != 1 ]; then info "no schedule set — e.g.: ./docmcp.sh schedule 30m   (or hourly | daily | 'm h dom mon dow')"; fi
 }
 
+# env-set <KEY> <VALUE>  — atomically set a single .env key (used by the console config
+# editor; the console validates KEY against its editable allowlist before calling). Thin
+# atomic writer (temp + mv, mode 600); pure awk, no `sed -i`.
+cmd_env_set() {
+  [ "$#" -eq 2 ] || die "usage: ./docmcp.sh env-set <KEY> <VALUE>"
+  local key="$1" value="$2"
+  case "$key" in
+    [A-Za-z_][A-Za-z0-9_]*) ;;
+    *) die "invalid env key: $key" ;;
+  esac
+  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; }
+  local tmp; tmp="$(mktemp "$ROOT/.env.XXXXXX")" || die "mktemp failed"
+  chmod 600 "$tmp"
+  # Replace an existing KEY= line in place, else append. VALUE is passed via the
+  # environment (never interpolated into the awk program) so its contents stay literal.
+  if ! KEY="$key" VALUE="$value" awk '
+        BEGIN { k=ENVIRON["KEY"]; v=ENVIRON["VALUE"]; done=0 }
+        index($0, k "=") == 1 { print k "=" v; done=1; next }
+        { print }
+        END { if (!done) print k "=" v }
+      ' "$ROOT/.env" > "$tmp"; then
+    rm -f "$tmp"; die "failed to write .env"
+  fi
+  mv "$tmp" "$ROOT/.env"
+  info "set ${key} in .env — restart the server for it to take effect: ./docmcp.sh serve"
+}
+
+# console [--port N] [--bind ADDR] [--build]  — launch the admin/setup web console.
+# Runs as a CONTAINER on the host with the Docker socket + repo bind-mounted (so it can
+# drive the full lifecycle and edit tokens/groups/.env via the docmcp.sh verbs), published
+# on LOOPBACK ONLY. Requires the admin (whole-corpus) token to log in; before setup it
+# starts in a one-time BOOTSTRAP mode that only serves the setup wizard.
+cmd_console() {
+  need_docker
+  local port=8765 bind=127.0.0.1 do_build=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port)    port="${2:-}"; shift 2 || die "--port needs a value" ;;
+      --port=*)  port="${1#--port=}"; shift ;;
+      --bind)    bind="${2:-}"; shift 2 || die "--bind needs a value" ;;
+      --bind=*)  bind="${1#--bind=}"; shift ;;
+      --build)   do_build=1; shift ;;
+      *)         die "usage: ./docmcp.sh console [--port N] [--bind 127.0.0.1] [--build]" ;;
+    esac
+  done
+  # Loopback only: the console runs Docker and edits tokens — far too powerful to expose.
+  case "$bind" in
+    127.0.0.1|localhost|::1) ;;
+    *) die "the console runs Docker and edits tokens — it must stay on loopback (got --bind ${bind}). To reach it from another machine, tunnel it: ssh -L ${port}:127.0.0.1:${port} <host>, then open http://127.0.0.1:${port}" ;;
+  esac
+  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "invalid --port '$port'"
+
+  # Ensure .env + a SESSION_SECRET exist so the console can sign cookies even on a fresh
+  # checkout (mirrors cmd_setup; never disturbs an existing secret).
+  [ -f "$ROOT/.env" ] || { cp "$ROOT/.env.example" "$ROOT/.env"; chmod 600 "$ROOT/.env"; }
+  grep -qE '^SESSION_SECRET=.+' "$ROOT/.env" 2>/dev/null \
+    || printf '\n# Console/portal session-cookie HMAC key (auto-generated).\nSESSION_SECRET=%s\n' \
+         "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)" >> "$ROOT/.env"
+  load_env
+
+  # Build the SPA in a throwaway node container (no host Node needed) on --build or first run.
+  if [ -n "$do_build" ] || [ ! -f "$ROOT/console-ui/dist/index.html" ]; then
+    [ -d "$ROOT/console-ui" ] || die "console-ui/ is missing — cannot build the console UI"
+    info "Building the console UI (Vite, in a node:20 container)…"
+    docker run --rm -v "$ROOT/console-ui:/app" -w /app --user "$(id -u):$(id -g)" \
+      node:20 sh -lc "npm install --no-audit --no-fund && npm run build" \
+      || die "console UI build failed (see output above)"
+  fi
+
+  # Build the console image (server image + Docker CLI) if missing or --build.
+  if [ -n "$do_build" ] || [ -z "$(docker image ls -q docs-mcp:console 2>/dev/null)" ]; then
+    server_image_exists || { info "Building the server image first…"; dc build docs-mcp; }
+    info "Building the console image (Docker CLI on the server image)…"
+    docker build -t docs-mcp:console --target console -f "$ROOT/docker/Dockerfile" "$ROOT" \
+      || die "console image build failed"
+  fi
+
+  # Bootstrap token: only when no usable token exists yet (pre-setup). In-memory only,
+  # passed via env; the console refuses it the moment setup mints the admin token.
+  local bootstrap="" url_suffix=""
+  if [ ! -s "$ROOT/tokens.json" ] || ! grep -q '"user"' "$ROOT/tokens.json" 2>/dev/null; then
+    bootstrap="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    url_suffix="/?bootstrap=${bootstrap}"
+    warn "no admin token yet — starting in BOOTSTRAP mode. Open the URL below to run the setup wizard; bootstrap access closes automatically once setup mints the admin token."
+  fi
+
+  # Let the non-root container user reach the Docker socket. The gid that owns the socket
+  # INSIDE the container is what the runtime enforces (on Docker Desktop that is 0, not the
+  # host's gid), so probe it through the console image rather than with host `stat`, which
+  # returns a gid that is meaningless inside the Linux VM.
+  local sock=/var/run/docker.sock sock_gid="" gid_arg=()
+  sock_gid="$(docker run --rm -v "$sock:$sock" docs-mcp:console stat -c '%g' "$sock" 2>/dev/null || true)"
+  [ -n "$sock_gid" ] && gid_arg=(--group-add "$sock_gid")
+
+  info "Console: ${C_B}http://${bind}:${port}${url_suffix}${C_0}"
+  info "  loopback only — stop with Ctrl-C"
+  # Bind the repo at the SAME absolute path so docmcp.sh inside resolves ROOT identically
+  # and compose's ../raw etc. resolve on the HOST daemon. PYTHONPATH points at the mounted
+  # src so console code edits take effect without an image rebuild. ALLOW_PLAINTEXT_PORTAL
+  # is forced on: the console is loopback HTTP, so session cookies must not be Secure-only.
+  exec docker run --rm -t \
+    --name docs-mcp-console \
+    -p "${bind}:${port}:8080" \
+    -v "$sock:$sock" \
+    -v "$ROOT:$ROOT" -w "$ROOT" \
+    --user "$(id -u):$(id -g)" ${gid_arg[@]+"${gid_arg[@]}"} \
+    -e PYTHONPATH="$ROOT/src" \
+    -e DOCMCP_REPO_ROOT="$ROOT" \
+    -e TOKENS_FILE="$ROOT/tokens.json" \
+    -e DOC_ROOT="$ROOT/raw" -e DOCSTORE_ROOT="$ROOT" \
+    -e CONSOLE_STATIC_DIR="$ROOT/console-ui/dist" \
+    -e SESSION_SECRET="${SESSION_SECRET:-}" \
+    -e ALLOW_PLAINTEXT_PORTAL=true \
+    -e CONSOLE_BOOTSTRAP_TOKEN="$bootstrap" \
+    -e BIND_HOST=0.0.0.0 -e BIND_PORT=8080 \
+    docs-mcp:console docmcp-console
+}
+
+# menu — a friendly interactive chooser for the common things (the web console, a local or
+# remote deploy, setup, and basic ops). This is the DEFAULT when docmcp.sh is run with no
+# arguments on a terminal; piped/non-interactive runs fall through to the full command list.
+cmd_menu() {
+  if [ ! -t 0 ] || [ ! -t 1 ]; then usage; return 0; fi
+  local hint=""
+  [ -s "$ROOT/tokens.json" ] || hint=" ${C_Y}(not set up yet — try 1, 2, 3, or 4)${C_0}"
+  while :; do
+    printf '\n%s\n\n' "${C_B}docmcp${C_0} — what would you like to do?${hint}"
+    printf '  %s1%s  Web console (UI)      browser admin + setup wizard (loopback only)\n'     "$C_B" "$C_0"
+    printf '  %s2%s  Deploy locally        loopback on this machine (plain HTTP, 127.0.0.1)\n' "$C_B" "$C_0"
+    printf '  %s3%s  Deploy to a server    remote: VPN (plaintext) or HTTPS (hostname)\n'       "$C_B" "$C_0"
+    printf '  %s4%s  Quick setup           build image + create .env + admin token\n'           "$C_B" "$C_0"
+    printf '  %s5%s  Start services        serve (server + reverse proxy)\n'                    "$C_B" "$C_0"
+    printf '  %s6%s  Stop services         stop\n'                                              "$C_B" "$C_0"
+    printf '  %s7%s  Status & health       status + doctor\n'                                   "$C_B" "$C_0"
+    printf '  %s8%s  All commands (help)\n'                                                     "$C_B" "$C_0"
+    printf '  %sq%s  Quit\n'                                                                    "$C_B" "$C_0"
+    printf '\nChoose [1-8, q]: '
+    local choice; IFS= read -r choice || { printf '\n'; return 0; }
+    case "$choice" in
+      1) cmd_console ;;                              # foreground; execs docker run (replaces process)
+      2) exec "$ROOT/local_deploy.sh" ;;
+      3) exec "$ROOT/remote_deploy.sh" ;;
+      4) ( cmd_setup ) || warn "setup did not complete" ;;
+      5) ( cmd_serve ) || warn "serve did not complete" ;;
+      6) ( cmd_stop )  || warn "stop did not complete" ;;
+      7) ( cmd_status; printf '\n'; cmd_doctor ) || true ;;
+      8) usage; return 0 ;;
+      q|Q|"") return 0 ;;
+      *) warn "invalid choice: $choice"; continue ;;
+    esac
+    # Non-terminal actions return here; pause so the output is readable, then redraw.
+    case "$choice" in
+      4|5|6|7) printf '\n%sPress Enter to return to the menu…%s' "$C_B" "$C_0"; IFS= read -r _ || return 0 ;;
+    esac
+  done
+}
+
 usage() {
   cat <<EOF
 ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Docker is required)
+
+  ${C_B}(no args)${C_0}                 interactive menu (console · deploy · setup · ops)
 
   ${C_B}setup${C_0}                     build the image, create .env + tokens.json (admin token)
   ${C_B}add${C_0} <path>...             stage files/dirs into raw/
   ${C_B}ingest${C_0} [--full]           build the searchable store from raw/ (in a container)
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
+  ${C_B}console${C_0} [--port N] [--build]  launch the admin/setup web console (loopback only)
   ${C_B}test${C_0} [token]              exercise the running server (list/read)
   ${C_B}status${C_0}                    show services, URL, and index summary
   ${C_B}inventory${C_0}                 corpus breakdown by type + top-level folder
@@ -1535,12 +1695,16 @@ EOF
 # local_deploy.sh / remote_deploy.sh wizards, which reuse the helpers and cmd_* funcs),
 # stop here so sourcing just defines functions instead of running a command.
 [ "${BASH_SOURCE[0]}" = "$0" ] || return 0
-cmd="${1:-help}"; shift || true
+# No argument → the interactive menu (it falls back to the full help on a non-TTY).
+cmd="${1:-menu}"; shift || true
 case "$cmd" in
+  menu|start)         cmd_menu "$@" ;;
   setup)              cmd_setup "$@" ;;
   add)                cmd_add "$@" ;;
   ingest)             cmd_ingest "$@" ;;
   serve|up)           cmd_serve "$@" ;;
+  console)            cmd_console "$@" ;;
+  env-set)            cmd_env_set "$@" ;;
   stop|down)          cmd_stop "$@" ;;
   logs)               cmd_logs "$@" ;;
   build)              cmd_build "$@" ;;

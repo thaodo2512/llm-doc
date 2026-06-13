@@ -84,3 +84,14 @@ RUN apt-get update \
        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 ENTRYPOINT ["docmcp-ingest"]
+
+# --------------------------------------------------------------------------- #
+# Console image: the slim server image PLUS the Docker CLI + Compose plugin, so the
+# admin/setup console — run on the host with the Docker socket + repo bind-mounted —
+# can drive `docker compose` and the docmcp.sh verbs. Published on LOOPBACK ONLY; never
+# exposed. The static CLI binaries are copied from the official docker image (no apt repo
+# dance). The SPA is served from the bind-mounted console-ui/dist, so it is not baked in.
+FROM server AS console
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:27-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+CMD ["docmcp-console"]

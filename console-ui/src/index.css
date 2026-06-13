@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* Design tokens — continuous with the docmcp portal palette (portal/render.py). */
+@theme {
+  --color-bg: #0f1320;
+  --color-bg2: #0b0f1a;
+  --color-panel: #161c2e;
+  --color-inset: #0e1422;
+  --color-line: #243049;
+  --color-line2: #2c3a5a;
+  --color-ink: #e7ecf6;
+  --color-ink2: #9fb0d0;
+  --color-muted: #8a99b8;
+  --color-accent: #7aa2ff;
+  --color-accent2: #2f5fd0;
+  --color-ok: #36d399;
+  --color-okbg: #0f2a22;
+  --color-danger: #ff8aa0;
+  --color-dangerbg: #2c1620;
+  --color-warn: #ffce86;
+  --color-warnbg: #2b2113;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: ui-monospace, Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #16203a 0%, transparent 55%),
+    var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+* {
+  box-sizing: border-box;
+}
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+/* Reusable component classes (kept small; pages compose Tailwind utilities). */
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-panel/80 p-5 shadow-lg shadow-black/20 backdrop-blur;
+  }
+  .btn {
+    @apply inline-flex cursor-pointer items-center gap-2 rounded-lg border border-accent2 bg-accent2 px-3.5 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply border-line2 bg-inset text-ink hover:border-accent hover:text-accent;
+  }
+  .btn-danger {
+    @apply border-[#7a2a3a] bg-dangerbg text-danger hover:brightness-125;
+  }
+  .input {
+    @apply w-full rounded-lg border border-line2 bg-inset px-3 py-2 text-sm text-ink outline-none placeholder:text-muted focus:border-accent;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-ink2;
+  }
+  .chip {
+    @apply inline-flex items-center rounded-full border border-accent2 bg-[#13203f] px-2.5 py-0.5 text-xs text-accent;
+  }
+  .badge-ok {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-[#1f6f54] bg-okbg px-2.5 py-0.5 text-xs font-medium text-ok;
+  }
+  .badge-bad {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-[#7a2a3a] bg-dangerbg px-2.5 py-0.5 text-xs font-medium text-danger;
+  }
+  .mono {
+    font-family: var(--font-mono);
+  }
+}

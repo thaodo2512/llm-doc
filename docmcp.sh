@@ -369,11 +369,17 @@ cmd_setup() {
 
   if [ ! -f "$ROOT/tokens.json" ]; then
     ( umask 077; printf '{}\n' > "$ROOT/tokens.json" ); chmod 600 "$ROOT/tokens.json"
-    local tok
+    local tok=""
     # Admin is the break-glass token: full access, non-expiring. Mint scoped,
     # expiring tokens for everyone else.
-    tok="$(cmd_token admin --all --expires never)" || die "failed to create the admin token (see the Docker error above)"
-    [ -n "$tok" ] || die "admin-token creation produced no token — check that 'docker run' works"
+    # If minting fails, DELETE the empty tokens.json we just wrote — otherwise this `[ ! -f ]`
+    # guard makes every retry skip minting, leaving a server with no admin token (a poison pill).
+    # The usual culprit is the `docker run -v "$ROOT:/work"` bind mount failing to propagate —
+    # transient on Docker Desktop right after a heavy build or under disk pressure.
+    if ! tok="$(cmd_token admin --all --expires never)" || [ -z "$tok" ]; then
+      rm -f "$ROOT/tokens.json"
+      die "admin-token creation produced no token. The repo bind mount likely did not propagate into the token container (common right after a big image build, or when the disk is nearly full). Free some disk (e.g. 'docker system prune -a'), restart Docker, then re-run. Removed the empty tokens.json so the retry will mint cleanly."
+    fi
     info "created tokens.json (mode 600) with an 'admin' token — full access, non-expiring:"
     printf "    %s%s%s\n" "$C_B" "$tok" "$C_0"
     warn "keep the admin token secret (break-glass). For others, mint scoped expiring tokens, e.g.: ./docmcp.sh token alice /public --expires 90d"

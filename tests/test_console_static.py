@@ -150,6 +150,16 @@ def test_cmd_console_imports_a_folder():
     assert "cmd_console --docs" in menu
 
 
+
+def test_setup_cleans_up_poison_pill_tokens_json():
+    # If admin-token minting fails (e.g. the repo bind mount didn't propagate into the token
+    # container), cmd_setup MUST delete the empty tokens.json it just wrote — otherwise the
+    # `[ ! -f tokens.json ]` guard makes every retry skip minting, leaving a tokenless server.
+    body = _sh_body("cmd_setup")
+    assert 'rm -f "$ROOT/tokens.json"' in body
+    assert "produced no token" in body
+
+
 def test_menu_is_default_and_routes():
     # Running docmcp.sh with no args opens the interactive menu (help on a non-TTY),
     # and the menu routes to the console + both deploy wizards.

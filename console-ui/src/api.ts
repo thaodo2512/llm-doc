@@ -126,6 +126,7 @@ export const api = {
   stop: () => post<JobRef>("/api/lifecycle/stop"),
   backup: () => post<JobRef>("/api/lifecycle/backup"),
   wizardApply: (body: Record<string, unknown>) => post<JobRef>("/api/wizard/apply", body),
+  wizardToken: () => request<{ token: string | null; has_token: boolean }>("/api/wizard/token"),
 
   job: (id: string) => request<JobStatus>(`/api/jobs/${id}`),
   jobLog: (id: string, after = 0) =>

@@ -87,6 +87,7 @@ def build_app(settings: Settings) -> Starlette:
         Route("/api/lifecycle/stop", c.stop, methods=["POST"]),
         Route("/api/lifecycle/backup", c.backup, methods=["POST"]),
         Route("/api/wizard/apply", c.wizard_apply, methods=["POST"]),
+        Route("/api/wizard/token", c.wizard_token, methods=["GET"]),
         # jobs
         Route("/api/jobs/{job_id}", c.job_status, methods=["GET"]),
         Route("/api/jobs/{job_id}/log", c.job_log, methods=["GET"]),

@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docmcp — your docs, inside your coding agent</title>
+<style>
+  :root {
+    --page: #eef2f6;
+    --card: #ffffff;
+    --ink: #17202a;
+    --muted: #5e6a78;
+    --line: #cbd4df;
+    --soft-line: #e7ebf1;
+    --blue: #2f63f4;
+    --blue-soft: #e8efff;
+    --green: #159c72;
+    --green-soft: #e7f6ef;
+    --amber: #c97815;
+    --amber-soft: #fff1da;
+    --red: #cf4f55;
+    --violet: #715fc7;
+    --violet-soft: #efedfb;
+    --teal: #16899a;
+    --teal-soft: #e5f5f7;
+    --code: #111827;
+    --code-ink: #ecf2fb;
+    --shadow: 0 18px 48px rgba(33, 45, 64, 0.13);
+    --shadow-sm: 0 6px 18px rgba(33, 45, 64, 0.08);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 480px at 80% -10%, rgba(47,99,244,0.10), transparent 60%),
+      radial-gradient(1000px 460px at -10% 8%, rgba(21,156,114,0.10), transparent 55%),
+      var(--page);
+    color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 80px; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code:not(pre code) {
+    background: #eef1f6; border: 1px solid var(--soft-line);
+    padding: 1px 6px; border-radius: 6px; font-size: 0.88em; color: #243044;
+  }
+
+  /* ---------- hero ---------- */
+  header.hero { text-align: center; padding: 72px 0 36px; }
+  .logo {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-weight: 900; font-size: 15px; letter-spacing: 0.5px; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .logo .dot { width: 12px; height: 12px; border-radius: 4px;
+    background: linear-gradient(135deg, var(--blue), var(--green)); }
+  h1 {
+    font-size: clamp(34px, 5vw, 52px); line-height: 1.08; margin: 18px 0 14px;
+    letter-spacing: -0.02em;
+  }
+  h1 .grad {
+    background: linear-gradient(100deg, var(--blue), var(--teal) 55%, var(--green));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { font-size: 19px; color: var(--muted); max-width: 760px; margin: 0 auto; }
+  .lede strong { color: var(--ink); }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 24px 0 6px; }
+  .badge {
+    font-size: 12.5px; font-weight: 700; padding: 5px 12px; border-radius: 999px;
+    border: 1px solid var(--soft-line); background: var(--card); box-shadow: var(--shadow-sm);
+  }
+  .badge.b1 { color: var(--blue); } .badge.b2 { color: var(--violet); }
+  .badge.b3 { color: var(--green); } .badge.b4 { color: var(--amber); }
+
+  /* ---------- section ---------- */
+  section { margin-top: 64px; }
+  .kicker {
+    color: var(--blue); font-size: 12.5px; font-weight: 800; letter-spacing: 1px;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  h2 { font-size: 30px; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 17px; max-width: 720px; margin: 0 0 26px; }
+
+  /* ---------- capability grid ---------- */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .cap {
+    background: var(--card); border: 1px solid var(--soft-line); border-radius: 16px;
+    padding: 22px 22px 20px; box-shadow: var(--shadow-sm);
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .cap:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
+  .cap .ico {
+    width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+    margin-bottom: 14px;
+  }
+  .cap h3 { margin: 0 0 6px; font-size: 18px; }
+  .cap p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+  .ico svg { width: 24px; height: 24px; }
+  .i-blue { background: var(--blue-soft); color: var(--blue); }
+  .i-green { background: var(--green-soft); color: var(--green); }
+  .i-amber { background: var(--amber-soft); color: var(--amber); }
+  .i-violet { background: var(--violet-soft); color: var(--violet); }
+  .i-teal { background: var(--teal-soft); color: var(--teal); }
+  .i-red { background: var(--red); color: #fff; }
+
+  /* ---------- diagram panel ---------- */
+  .panel {
+    background: var(--card); border: 1px solid var(--soft-line); border-radius: 20px;
+    padding: 28px; box-shadow: var(--shadow);
+  }
+  .panel svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; color: var(--muted); font-size: 13.5px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 13px; height: 13px; border-radius: 4px; display: inline-block; }
+
+  /* ---------- steps ---------- */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
+  .duo { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  @media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+  .cap pre { margin-top: 12px; }
+  .cap .more { margin-top: 12px; }
+  .step {
+    background: var(--card); border: 1px solid var(--soft-line); border-radius: 16px;
+    padding: 24px 22px; box-shadow: var(--shadow-sm); position: relative; overflow: hidden;
+  }
+  .step::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+    background: linear-gradient(180deg, var(--blue), var(--green));
+  }
+  .step .n {
+    width: 34px; height: 34px; border-radius: 10px; background: var(--blue); color: #fff;
+    font-weight: 800; display: grid; place-items: center; font-size: 16px; margin-bottom: 12px;
+  }
+  .step h3 { margin: 0 0 8px; font-size: 18px; }
+  .step p { margin: 0 0 12px; color: var(--muted); font-size: 14.5px; }
+  pre {
+    background: var(--code); color: var(--code-ink); border-radius: 12px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.65; margin: 0;
+  }
+  pre .c { color: #8aa0b8; }   /* comment */
+  pre .k { color: #7ab7ff; }   /* command keyword */
+  .note {
+    background: var(--amber-soft); border: 1px solid #f0d9ad; border-radius: 12px;
+    padding: 14px 16px; color: #7a4d12; font-size: 14px; margin-top: 16px;
+  }
+  .note strong { color: #5e3a0c; }
+
+  /* ---------- tools table ---------- */
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+    border: 1px solid var(--soft-line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); }
+  th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--soft-line); font-size: 14.5px; }
+  th { background: #f6f8fb; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+
+  /* ---------- docs links ---------- */
+  .links { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 700px) { .links { grid-template-columns: 1fr; } }
+  .lnk {
+    display: flex; align-items: center; gap: 14px; background: var(--card);
+    border: 1px solid var(--soft-line); border-radius: 14px; padding: 16px 18px;
+    box-shadow: var(--shadow-sm); color: var(--ink);
+  }
+  .lnk:hover { text-decoration: none; border-color: var(--blue); }
+  .lnk .ar { margin-left: auto; color: var(--blue); font-weight: 800; }
+  .lnk b { display: block; font-size: 15.5px; }
+  .lnk small { color: var(--muted); }
+
+  footer { margin-top: 70px; padding-top: 26px; border-top: 1px solid var(--soft-line);
+    color: var(--muted); font-size: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== HERO ===================== -->
+  <header class="hero">
+    <div class="logo"><span class="dot"></span> docmcp</div>
+    <h1>Your docs, inside your <span class="grad">coding agent</span>.</h1>
+    <p class="lede">
+      A self-hosted <strong>MCP server</strong> that gives coding agents — OpenAI Codex and other
+      MCP clients — <strong>search-and-cite</strong> access to your internal documentation. It runs
+      entirely on <strong>your own infrastructure</strong>: no documents and no queries ever leave
+      your network.
+    </p>
+    <div class="badges">
+      <span class="badge b1">Apache-2.0</span>
+      <span class="badge b2">Model Context Protocol</span>
+      <span class="badge b3">Self-hosted</span>
+      <span class="badge b4">Runs fully offline</span>
+    </div>
+  </header>
+
+  <!-- ===================== WHAT YOU CAN DO ===================== -->
+  <section id="capabilities">
+    <div class="kicker">What you can do</div>
+    <h2>One server, six superpowers for your docs</h2>
+    <p class="sub">Point a coding agent at docmcp and it can find, read, and cite your internal
+      knowledge — under access control you define, on infrastructure you control.</p>
+
+    <div class="grid">
+      <div class="cap">
+        <div class="ico i-blue">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </div>
+        <h3>Ask in plain language</h3>
+        <p>“Find the firmware flashing runbook and summarize it.” The agent searches, reads the
+          right file, and <b>cites the exact path and line</b>.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-green">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 13h8M8 17h6"/></svg>
+        </div>
+        <h3>Ingest almost anything</h3>
+        <p>PDFs, Word/PowerPoint/Excel, HTML, Markdown, and source code become a clean Markdown
+          store — tables and scanned pages included, via <b>Docling + tree-sitter</b>.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-violet">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </div>
+        <h3>Control who sees what</h3>
+        <p>Each user gets a bearer token scoped to <b>path prefixes</b>. Reusable groups keep
+          grants tidy — a reader can never read outside their scope.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-teal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M6 12h12M10 18h4"/></svg>
+        </div>
+        <h3>Search two ways</h3>
+        <p>Fast <b>keyword / full-text</b> search by default (ripgrep · FTS5), plus an optional
+          <b>semantic vector</b> layer (Qdrant + ONNX embedder) that stays fully offline.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-red">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
+        </div>
+        <h3>Run it entirely on-prem</h3>
+        <p>Models are vendored in the repo; ingest and serving need <b>no external API and no
+          internet</b> — ideal for air-gapped or privacy-sensitive environments.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-amber">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>
+        </div>
+        <h3>Operate from the browser</h3>
+        <p>A <b>setup wizard + admin console</b> gets you running with no token to paste; an
+          optional <b>upload portal</b> lets non-technical teammates publish docs without git.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== ARCHITECTURE ===================== -->
+  <section id="architecture">
+    <div class="kicker">How it works</div>
+    <h2>Architecture at a glance</h2>
+    <p class="sub">An offline pipeline builds a curated store; a hardened HTTP edge serves it to
+      agents. Only the proxy is ever exposed to the network.</p>
+
+    <div class="panel">
+      <svg viewBox="0 0 980 560" role="img" aria-label="docmcp architecture diagram">
+        <defs>
+          <marker id="arrow" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto">
+            <path d="M1,1 L9,5.5 L1,10" fill="none" stroke="#7a8aa0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="arrowblue" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto">
+            <path d="M1,1 L9,5.5 L1,10" fill="none" stroke="#2f63f4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="arrowteal" markerWidth="11" markerHeight="11" refX="8" refY="5.5" orient="auto">
+            <path d="M1,1 L9,5.5 L1,10" fill="none" stroke="#16899a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <style>
+            .box { rx: 14; }
+            .title { font: 700 16px ui-sans-serif, system-ui, sans-serif; fill: #17202a; }
+            .desc  { font: 400 12.5px ui-sans-serif, system-ui, sans-serif; fill: #5e6a78; }
+            .lane  { font: 800 12px ui-sans-serif, system-ui, sans-serif; letter-spacing: 1px; }
+            .edge  { font: 600 12px ui-sans-serif, system-ui, sans-serif; fill: #5e6a78; }
+            .tag   { font: 700 11px ui-monospace, monospace; }
+          </style>
+        </defs>
+
+        <!-- lane backgrounds -->
+        <rect x="0" y="40" width="980" height="190" rx="18" fill="#f3f8f5" stroke="#dcebe3"/>
+        <rect x="0" y="300" width="980" height="250" rx="18" fill="#eef3fe" stroke="#dbe6fd"/>
+        <text x="24" y="66" class="lane" fill="#159c72">INGEST · offline, on demand, never exposed</text>
+        <text x="24" y="326" class="lane" fill="#2f63f4">SERVE · the only path reachable from the network</text>
+
+        <!-- ===== INGEST LANE ===== -->
+        <!-- raw sources -->
+        <rect x="40" y="92" width="220" height="108" rx="14" fill="#ffffff" stroke="#cdd6e0"/>
+        <text x="60" y="124" class="title">Raw sources</text>
+        <text x="60" y="148" class="desc">PDF · Office · HTML</text>
+        <text x="60" y="167" class="desc">Markdown · source code</text>
+        <text x="60" y="188" class="tag" fill="#159c72">version-controlled in raw/</text>
+
+        <!-- ingest -->
+        <rect x="382" y="92" width="216" height="108" rx="14" fill="#ffffff" stroke="#cdd6e0"/>
+        <text x="402" y="124" class="title">Ingest pipeline</text>
+        <text x="402" y="148" class="desc">Docling + tree-sitter</text>
+        <text x="402" y="167" class="desc">layout · tables · OCR</text>
+        <text x="402" y="188" class="tag" fill="#159c72">vendored models, offline</text>
+
+        <!-- curated store -->
+        <rect x="720" y="92" width="220" height="108" rx="14" fill="#ffffff" stroke="#cdd6e0"/>
+        <text x="740" y="124" class="title">Curated store</text>
+        <text x="740" y="148" class="desc">clean Markdown docs</text>
+        <text x="740" y="167" class="desc">+ search index</text>
+        <text x="740" y="188" class="tag" fill="#159c72">shared Docker volume</text>
+
+        <!-- ingest arrows -->
+        <line x1="260" y1="146" x2="378" y2="146" stroke="#7a8aa0" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="598" y1="146" x2="716" y2="146" stroke="#7a8aa0" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- ===== SERVE LANE ===== -->
+        <!-- docs-mcp -->
+        <rect x="720" y="350" width="220" height="140" rx="14" fill="#ffffff" stroke="#bcceff"/>
+        <text x="740" y="382" class="title">docs-mcp</text>
+        <text x="740" y="404" class="desc">FastMCP app</text>
+        <text x="740" y="423" class="desc">keyword + optional vector</text>
+        <text x="740" y="446" class="tag" fill="#2f63f4">per-token RBAC</text>
+        <text x="740" y="468" class="desc">internal only · not published</text>
+
+        <!-- caddy -->
+        <rect x="400" y="350" width="200" height="140" rx="14" fill="#ffffff" stroke="#bcceff"/>
+        <text x="420" y="382" class="title">Caddy</text>
+        <text x="420" y="404" class="desc">reverse proxy</text>
+        <text x="420" y="423" class="desc">TLS / auth edge</text>
+        <text x="420" y="448" class="tag" fill="#cf4f55">the ONLY exposed port</text>
+
+        <!-- agent -->
+        <rect x="40" y="350" width="220" height="140" rx="14" fill="#ffffff" stroke="#cdd6e0"/>
+        <text x="60" y="382" class="title">Coding agent</text>
+        <text x="60" y="404" class="desc">OpenAI Codex</text>
+        <text x="60" y="423" class="desc">or any MCP client</text>
+        <text x="60" y="448" class="tag" fill="#715fc7">on a laptop / CI</text>
+
+        <!-- search read: store -> docs-mcp (vertical) -->
+        <line x1="830" y1="200" x2="830" y2="346" stroke="#16899a" stroke-width="2" marker-end="url(#arrowteal)"/>
+        <text x="843" y="278" class="edge" fill="#16899a">reads &amp; searches</text>
+
+        <!-- docs-mcp -> caddy -->
+        <line x1="716" y1="420" x2="604" y2="420" stroke="#2f63f4" stroke-width="2" marker-end="url(#arrowblue)"/>
+        <text x="660" y="402" class="edge" fill="#2f63f4" text-anchor="middle">reverse</text>
+        <text x="660" y="415" class="edge" fill="#2f63f4" text-anchor="middle">proxy</text>
+
+        <!-- caddy -> agent -->
+        <line x1="396" y1="420" x2="264" y2="420" stroke="#2f63f4" stroke-width="2" marker-end="url(#arrowblue)"/>
+
+        <!-- streamable http label under the serve flow -->
+        <rect x="300" y="505" width="380" height="30" rx="15" fill="#e8efff" stroke="#cfddff"/>
+        <text x="490" y="524" class="edge" fill="#2f63f4" text-anchor="middle" style="font-weight:700">
+          Streamable HTTP + bearer token  ·  HTTP on VPN, HTTPS in public
+        </text>
+      </svg>
+
+      <div class="legend">
+        <span><i style="background:#159c72"></i> Build path — runs on demand, never exposed</span>
+        <span><i style="background:#2f63f4"></i> Serve path — reached only through Caddy</span>
+        <span><i style="background:#16899a"></i> Read &amp; search the curated store</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== SETUP ===================== -->
+  <section id="setup">
+    <div class="kicker">Setup</div>
+    <h2>Up and running in three steps</h2>
+    <p class="sub">The only thing the host needs is <strong>Docker</strong> (with the Compose
+      plugin). The helper and the web console run everything in containers — no Python, no
+      <code>uv</code>, no ripgrep on the host.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h3>Get the code</h3>
+        <p>Models ship as <b>Git LFS</b> data — install git-lfs first, then verify the pull.</p>
+<pre><span class="c"># once per machine, before cloning</span>
+<span class="k">git</span> lfs install
+<span class="k">git</span> clone &lt;repo-url&gt; &amp;&amp; cd &lt;repo&gt;
+<span class="k">./docmcp.sh</span> models   <span class="c"># verify</span></pre>
+      </div>
+
+      <div class="step">
+        <div class="n">2</div>
+        <h3>Launch the server</h3>
+        <p>The browser console opens a <b>setup wizard</b> — no token to paste on first run.</p>
+<pre><span class="k">./docmcp.sh</span> console \
+   --docs /path/to/your/docs
+
+<span class="c"># …or the scriptable CLI:</span>
+<span class="k">./docmcp.sh</span> setup
+<span class="k">./docmcp.sh</span> ingest &amp;&amp; <span class="k">./docmcp.sh</span> serve</pre>
+      </div>
+
+      <div class="step">
+        <div class="n">3</div>
+        <h3>Connect your agent</h3>
+        <p>Mint a scoped token and point Codex at the server. Keep the token in an env var.</p>
+<pre><span class="c"># operator mints a scoped token</span>
+<span class="k">./docmcp.sh</span> token alice /public /team-fw
+
+<span class="c"># user registers the MCP server</span>
+<span class="k">export</span> DOCS_MCP_TOKEN=tok_alice_xxxx
+<span class="k">codex</span> mcp add docs \
+  --url http://10.0.0.5/mcp \
+  --bearer-token-env-var DOCS_MCP_TOKEN</pre>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Network profile.</strong> The shipped default is the internal-network profile — plain
+      HTTP over a trusted network such as a VPN (bearer tokens travel unencrypted, so keep it on a
+      network you trust). For a public network set <code>DOMAIN=docs.company.internal</code> and
+      Caddy serves <strong>automatic HTTPS</strong>. Full profiles, ports, and the security model
+      live in <a href="docs/OPERATING.md">docs/OPERATING.md</a>.
+    </div>
+  </section>
+
+  <!-- ===================== OPERATIONS ===================== -->
+  <section id="operations">
+    <div class="kicker">After setup</div>
+    <h2>Day-two operations</h2>
+    <p class="sub">The two things you'll actually do once it's running: grow the corpus, and
+      survive a reboot.</p>
+
+    <div class="duo">
+      <div class="cap">
+        <div class="ico i-green">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <h3>Add more documents, anytime</h3>
+        <p>No need to take the server down. The recommended way to add a folder is to <b>link</b>
+          it — ingest reads it <b>in place, no copy</b> — then rebuild the index (it's
+          <b>incremental</b>, and new docs are searchable as soon as ingest finishes).</p>
+<pre><span class="k">./docmcp.sh</span> link /path/to/more/docs  <span class="c"># register — read in place, no copy</span>
+<span class="k">./docmcp.sh</span> ingest                    <span class="c"># rebuild the index</span></pre>
+        <p class="more"><code>./docmcp.sh add &lt;path&gt;</code> instead <i>copies</i> into
+          <code>raw/</code> (handy for a single file, but duplicates storage — prefer
+          <code>link</code> for folders). Also: the console's <b>Ingest</b> page (one click),
+          <code>./docmcp.sh schedule 30m</code> for auto-ingest, or the optional
+          <a href="docs/PORTAL.md">upload portal</a> for non-technical teammates.</p>
+      </div>
+
+      <div class="cap">
+        <div class="ico i-blue">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        </div>
+        <h3>It survives reboots</h3>
+        <p>The serving stack runs with <code>restart: unless-stopped</code> and your data lives in
+          Docker volumes plus repo files — a reboot loses nothing, and <b>the server comes back on
+          its own</b> (no <code>serve</code> re-run needed).</p>
+        <p class="more">On a <b>Mac laptop</b> the one catch is Docker Desktop — it doesn't launch
+          at login unless you enable <i>“Start Docker Desktop when you sign in.”</i> Once Docker is
+          up the stack self-heals; confirm with <code>./docmcp.sh status</code>. On a Linux server
+          it's fully automatic. (Only <code>./docmcp.sh uninstall</code> ever deletes your data.)</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== TOOLS ===================== -->
+  <section id="tools">
+    <div class="kicker">The interface</div>
+    <h2>Four tools the agent calls</h2>
+    <p class="sub">Every tool intersects paths with the caller's allowed prefixes;
+      <code>read_doc</code> denies (not silently empties) a disallowed path.</p>
+    <table>
+      <thead><tr><th>Tool</th><th>Returns</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>list_docs</code></td><td>index entries under a path</td><td>pre-filtered to your prefixes</td></tr>
+        <tr><td><code>search_docs</code></td><td><code>{path, line, snippet, score}</code></td><td>keyword — ripgrep / FTS5</td></tr>
+        <tr><td><code>read_doc</code></td><td><code>{path, content, …}</code></td><td>denies paths outside your prefixes</td></tr>
+        <tr><td><code>semantic_search</code></td><td><code>{path, line, snippet, score}</code></td><td>off unless <code>ENABLE_VECTOR=true</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===================== DOCS ===================== -->
+  <section id="docs">
+    <div class="kicker">Go deeper</div>
+    <h2>Documentation</h2>
+    <p class="sub">The Markdown <a href="README.md">README</a> is the quick start; these guides
+      cover everything else.</p>
+    <div class="links">
+      <a class="lnk" href="docs/OPERATING.md"><div><b>Operating reference</b><small>deploy profiles, ports, tokens, vector, config, troubleshooting</small></div><span class="ar">→</span></a>
+      <a class="lnk" href="docs/CONSOLE.md"><div><b>Admin console</b><small>setup wizard + ongoing browser operations</small></div><span class="ar">→</span></a>
+      <a class="lnk" href="docs/PORTAL.md"><div><b>Upload portal</b><small>let non-technical contributors publish docs without git</small></div><span class="ar">→</span></a>
+      <a class="lnk" href="docs/AUTHORING.md"><div><b>Authoring guide</b><small>writing docs that retrieve well</small></div><span class="ar">→</span></a>
+    </div>
+  </section>
+
+  <footer>
+    Licensed under the Apache License, Version 2.0 · Copyright 2026 The docmcp Authors ·
+    Built on the <a href="https://modelcontextprotocol.io">Model Context Protocol</a>.
+  </footer>
+
+</div>
+</body>
+</html>

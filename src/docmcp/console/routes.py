@@ -359,6 +359,19 @@ class Console:
             return _json({"error": str(exc)}, 409)
         return _json({"job_id": job.id, "label": "setup wizard"}, 202)
 
+    async def wizard_token(self, request: Request) -> Response:
+        # The just-minted admin token, so the wizard's completion screen can SHOW it (with a copy
+        # button) instead of telling the user to scroll the log. The first-run wizard mints the
+        # admin token mid-deploy, which flips setup_done and turns its bootstrap session stale — so
+        # allow_stale_bootstrap lets that very session read back the token it just created. This is
+        # the same person who launched the loopback-only console with the one-time bootstrap secret,
+        # and admins can already retrieve this token via /api/connect, so it widens nothing. Returns
+        # {has_token: false} before setup (no token exists yet).
+        if not self.auth.require(request, admin=False, allow_stale_bootstrap=True):
+            return _json({"error": "unauthorized"}, 401)
+        token = reads.client_bearer_token(self.settings)
+        return _json({"token": token, "has_token": bool(token)})
+
     # -- job inspection ------------------------------------------------------
     async def job_status(self, request: Request) -> Response:
         # allow_stale_bootstrap: the first-run wizard runs under a bootstrap session that setup

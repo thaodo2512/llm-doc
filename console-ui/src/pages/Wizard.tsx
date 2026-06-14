@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError, type JobRef } from "../api";
 import { useAuth } from "../auth";
 import { JobLog } from "../components/JobLog";
-import { Alert, Field, PageTitle } from "../components/ui";
+import { Alert, CopyButton, Field, PageTitle } from "../components/ui";
 
 type Profile = "local" | "vpn" | "https";
 
@@ -22,6 +22,7 @@ export function Wizard() {
   const [job, setJob] = useState<JobRef | null>(null);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
+  const [adminToken, setAdminToken] = useState<string | null>(null);
   const set = (k: string, v: any) => setF((s) => ({ ...s, [k]: v }));
 
   const apply = async () => {
@@ -44,9 +45,15 @@ export function Wizard() {
       setDone(true);
       // For an admin re-run, refresh to pick up new state. For a first-run BOOTSTRAP session, do
       // NOT refresh: setup_done now invalidates bootstrap, so refreshing would bounce the user to
-      // /login before they can copy the admin token shown in the completed log. They sign in via
-      // the button in the success message instead.
-      if (auth.role !== "bootstrap") auth.refresh();
+      // /login before they can copy the admin token. They sign in via the button below instead.
+      if (auth.role !== "bootstrap") {
+        auth.refresh();
+      } else {
+        // Surface the freshly minted admin token right here (with a copy button) so the user
+        // doesn't have to scroll the log to find it. The stale bootstrap session is still allowed
+        // to read it back (see /api/wizard/token); failure is non-fatal — the log still has it.
+        api.wizardToken().then((r) => setAdminToken(r.token)).catch(() => setAdminToken(null));
+      }
     }
   };
 
@@ -69,13 +76,36 @@ export function Wizard() {
         <div className="card">
           <JobLog jobId={job.job_id} onDone={onDone} />
           {done && (
-            <Alert kind="ok">
-              Setup complete. {auth.role === "bootstrap" ? (
-                <>The admin token is printed in the log above — copy it, then <button className="underline" onClick={() => nav("/login")}>sign in</button>.</>
-              ) : (
-                <>Your deployment is configured. <button className="underline" onClick={() => nav("/")}>Go to dashboard</button>.</>
-              )}
-            </Alert>
+            auth.role === "bootstrap" ? (
+              <Alert kind="ok">
+                <div className="font-medium">Setup complete — here is your admin token.</div>
+                {adminToken ? (
+                  <>
+                    <div className="mt-2 flex items-center gap-3">
+                      <code className="mono select-all break-all rounded-lg border border-line bg-bg2 px-3 py-2 text-accent">
+                        {adminToken}
+                      </code>
+                      <CopyButton text={adminToken} label="Copy token" />
+                    </div>
+                    <p className="mt-2 text-sm text-muted">
+                      Save this now — it grants full access and isn't shown again. Then{" "}
+                      <button className="underline" onClick={() => nav("/login")}>sign in</button>{" "}
+                      with it. (It's also in the log above.)
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-sm">
+                    Copy it from the log above, then{" "}
+                    <button className="underline" onClick={() => nav("/login")}>sign in</button>.
+                  </p>
+                )}
+              </Alert>
+            ) : (
+              <Alert kind="ok">
+                Setup complete. Your deployment is configured.{" "}
+                <button className="underline" onClick={() => nav("/")}>Go to dashboard</button>.
+              </Alert>
+            )
           )}
         </div>
       </div>

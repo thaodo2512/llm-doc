@@ -407,20 +407,31 @@ cmd_setup() {
 EOF
 }
 
-# add <file-or-dir>...  — stage documents into raw/ (plain file copy; no toolchain).
+# add <file-or-dir>...  — COPY documents into raw/ (plain file copy; no toolchain).
+# NOT the recommended way to add a folder: it duplicates storage. Prefer `link` (reads in
+# place, no copy). `add` is for single files, or when you deliberately want a git-tracked copy.
 cmd_add() {
   [ "$#" -ge 1 ] || die "usage: ./docmcp.sh add <file-or-dir> [<file-or-dir> ...]"
   mkdir -p "$ROOT/raw"
+  # Steer folder adds toward the no-copy path; copying a large corpus wastes disk.
+  for src in "$@"; do
+    if [ -d "$src" ]; then
+      warn "'add' COPIES into raw/ and duplicates storage — for a folder, prefer:"
+      warn "    ./docmcp.sh link \"$src\"   (ingests it in place, no copy)"
+      break
+    fi
+  done
   for src in "$@"; do
     [ -e "$src" ] || { warn "skip (not found): $src"; continue; }
     cp -R "$src" "$ROOT/raw/"
-    info "added $src -> raw/"
+    info "copied $src -> raw/"
   done
   info "Now run: ./docmcp.sh ingest"
 }
 
-# link <dir> [name] | --list | --remove <name>  — register an EXTERNAL folder as an ingest
-# source WITHOUT copying. Creates a visible symlink raw/<name> -> <dir>; `ingest` then
+# link <dir> [name] | --list | --remove <name>  — the RECOMMENDED way to add a docs folder:
+# register an EXTERNAL folder as an ingest source WITHOUT copying (no duplicated storage).
+# Creates a visible symlink raw/<name> -> <dir>; `ingest` then
 # bind-mounts that link's target into the container and reads it in place (curated docs land
 # under /<name>/…). Edits in <dir> are picked up on the next ingest. The symlink is just the
 # registry — the ingest walker skips it; the real content comes via the bind mount.
@@ -1960,8 +1971,8 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}(no args)${C_0}                 interactive menu (console · deploy · setup · ops)
 
   ${C_B}setup${C_0}                     build the image, create .env + tokens.json (admin token)
-  ${C_B}add${C_0} <path>...             stage files/dirs into raw/ (copies them in)
-  ${C_B}link${C_0} <dir> [name]         link an external docs folder (no copy; ingest reads it in place) · --list · --remove <name>
+  ${C_B}link${C_0} <dir> [name]         add a docs folder — ingest reads it IN PLACE, no copy ${C_B}(recommended)${C_0} · --list · --remove <name>
+  ${C_B}add${C_0} <path>...             COPY files/dirs into raw/ — duplicates storage; prefer 'link' for folders
   ${C_B}ingest${C_0} [--full]           build the searchable store from raw/ + linked sources (in a container)
   ${C_B}serve${C_0}                     start the server + reverse proxy (background)
   ${C_B}console${C_0} [--port N] [--build] [--no-open] [--docs DIR]  launch the admin/setup web console (loopback; opens your browser; --docs imports a folder during setup)

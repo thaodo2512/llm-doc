@@ -230,6 +230,35 @@ async def test_connect_has_no_token_before_setup(tmp_path, monkeypatch):
         assert (await ac.get("/api/connect")).json()["has_token"] is False
 
 
+async def test_wizard_token_shown_to_stale_bootstrap_after_setup(tmp_path, monkeypatch):
+    # The completion screen SHOWS the freshly minted admin token (copy button) instead of pointing
+    # at the log. The wizard's bootstrap session goes stale the instant setup mints that token, so
+    # /api/wizard/token must serve it back to that same now-stale session.
+    app = make_app(tmp_path, monkeypatch, bootstrap="boot-xyz")
+    async with client(app) as ac:
+        await ac.post("/api/login", json={"bootstrap": "boot-xyz"})
+        # pre-setup: no token exists yet → nothing to show
+        pre = (await ac.get("/api/wizard/token")).json()
+        assert pre["has_token"] is False and pre["token"] is None
+        # setup "completes": the admin (whole-corpus) token appears → bootstrap goes stale
+        (tmp_path / "tokens.json").write_text(json.dumps({ADMIN: {"user": "admin", "allowed_prefixes": ["/"]}}))
+        r = await ac.get("/api/wizard/token")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["has_token"] is True and body["token"] == ADMIN
+        # the stale bootstrap still can't reach admin reads — this endpoint is the only new surface
+        assert (await ac.get("/api/tokens")).status_code == 401
+
+
+async def test_wizard_token_requires_a_session(tmp_path, monkeypatch):
+    # Unauthenticated callers get nothing — the token is never anonymously readable.
+    app = make_app(tmp_path, monkeypatch, tokens={ADMIN: {"user": "admin", "allowed_prefixes": ["/"]}})
+    async with client(app) as ac:
+        assert (await ac.get("/api/wizard/token")).status_code == 401
+        await _login(ac, ADMIN)  # an admin may read it too (same token /api/connect already embeds)
+        assert (await ac.get("/api/wizard/token")).json()["token"] == ADMIN
+
+
 async def test_session_reports_import_dir(tmp_path, monkeypatch):
     # cmd_console advertises the folder name via CONSOLE_IMPORT_NAME so the wizard can show it.
     monkeypatch.setenv("CONSOLE_IMPORT_NAME", "mydocs")

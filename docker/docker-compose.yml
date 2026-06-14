@@ -1,0 +1,145 @@
+name: docs-mcp
+
+# Layout:
+#   docs-mcp  — the FastMCP server (always on). NOT published; reached only by caddy.
+#   caddy     — TLS reverse proxy; the ONLY exposed entry point.
+#   ingest    — run on demand to (re)build the doc store:  docker compose run --rm ingest --full
+#   qdrant    — optional; starts only with:  docker compose --profile vector up
+# The curated doc store + index (+ FTS5 db) live in the shared `docstore` volume.
+
+services:
+  docs-mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: server
+    # Default = the slim keyword-only image. When ENABLE_VECTOR=true, `docmcp.sh serve`
+    # exports DOCS_MCP_IMAGE=docs-mcp:server-vector so query-time semantic_search has its
+    # offline embedder + qdrant-client (the slim image has neither). Falls back to slim.
+    image: ${DOCS_MCP_IMAGE:-docs-mcp:server}
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8080"
+      DOC_ROOT: /srv/docs/curated
+      # DOCSTORE_ROOT holds index/manifest/status/lock OUTSIDE the served DOC_ROOT,
+      # so they can't be read_doc'd. The server reads index.json from here (:ro).
+      DOCSTORE_ROOT: /srv/docs
+      TOKENS_FILE: /srv/tokens.json
+      FTS5_DB: /srv/docs/index.sqlite
+      # Vector/semantic search (query-time embedding runs IN this server process — needs the
+      # server-vector image). Model-intrinsic settings (dim/pooling/prefixes/model_dir) are
+      # baked into that image; .env can still override them via env_file.
+      ENABLE_VECTOR: ${ENABLE_VECTOR:-false}
+      QDRANT_URL: http://qdrant:6333
+      EMBED_BACKEND: ${EMBED_BACKEND:-local}
+    volumes:
+      - docstore:/srv/docs:ro
+      # tokens.json lives OUTSIDE the read-only docstore mount (can't create a
+      # mountpoint inside a :ro volume). groups.json (RBAC group defs) sits beside it.
+      - ../tokens.json:/srv/tokens.json:ro
+      - ../groups.json:/srv/groups.json:ro
+    expose:
+      - "8080"          # internal only — intentionally no `ports:` mapping
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - docs-mcp
+    environment:
+      # Plain HTTP on :80 unless DOMAIN is a hostname (then Caddy serves automatic
+      # HTTPS for it). HTTP_BIND chooses which host interface :80 is published on.
+      DOMAIN: ${DOMAIN:-:80}
+    ports:
+      # HTTP_BIND defaults to LOOPBACK here, but the shipped .env sets it to 0.0.0.0
+      # for the internal-network (VPN, raw IP) profile. Publishing plaintext off
+      # loopback exposes bearer tokens in cleartext, so `docmcp.sh serve` only allows
+      # it with DOMAIN=<host> (HTTPS) or an explicit ALLOW_PLAINTEXT_HTTP=true opt-in
+      # (trusted private network only). HTTPS is encrypted, so it binds all interfaces.
+      # HTTP_PORT/HTTPS_PORT set the published (client-facing) port numbers; Caddy
+      # always listens on container :80/:443, so these need no Caddyfile change.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      # Bind :443 to the SAME interface as :80 so a loopback/VPN deploy (HTTP_BIND unset
+      # or a pinned IP) does not leave an all-interfaces :443 listener that contradicts
+      # its posture. The HTTPS profile sets HTTP_BIND=0.0.0.0, so :443 stays public there.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  ingest:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: ingest
+    image: docs-mcp:ingest
+    profiles: ["ingest"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      SOURCE_DIRS: /srv/raw
+      DOC_ROOT: /srv/docs/curated
+      DOCSTORE_ROOT: /srv/docs        # index/manifest/status/lock written here (rw)
+      FTS5_DB: /srv/docs/index.sqlite
+      # Parallel parse fan-out. Default 1 (sequential) for a bare `compose run`; the
+      # `docmcp.sh ingest` wrapper auto-sets this to a CPU-derived value so the slow
+      # Docling/tree-sitter parse runs across worker processes. Override in .env.
+      INGEST_WORKERS: ${INGEST_WORKERS:-1}
+      # DOCLING_ARTIFACTS_PATH is baked into the ingest image — the vendored models
+      # are COPY'd to /opt/docling/models at build time. Deliberately NOT mounting a
+      # volume there: a named-volume mount would shadow the in-image vendored models.
+      QDRANT_URL: http://qdrant:6333
+      # Offline embedding (used when ENABLE_VECTOR=true). Model-intrinsic settings are baked
+      # into the ingest image at /opt/models/embed; .env can override via env_file.
+      EMBED_BACKEND: ${EMBED_BACKEND:-local}
+    volumes:
+      - ../raw:/srv/raw:ro          # mount your raw sources here
+      - docstore:/srv/docs          # writes curated/ + index + index.sqlite
+
+  # Optional upload/manage portal (starts only with --profile portal). Reuses
+  # the slim server image, writes ONLY to raw/ (rw), has NO Docker socket and NO docstore
+  # mount. The existing cron `schedule` ingests what it writes; docs-mcp stays read-only.
+  portal:
+    image: docs-mcp:server
+    profiles: ["portal"]
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PORTAL_ENABLED: "true"
+      BIND_HOST: "0.0.0.0"
+      BIND_PORT: "8080"
+      DOC_ROOT: /srv/docs/curated     # only used to satisfy Settings.load's path guard
+      DOCSTORE_ROOT: /srv/docs
+      TOKENS_FILE: /srv/tokens.json
+      STAGING_ROOT: /srv/raw          # uploads land here (== the ingest source root)
+      # SESSION_SECRET and ALLOW_PLAINTEXT_PORTAL come from ../.env
+    command: ["docmcp-portal"]
+    volumes:
+      - ../raw:/srv/raw:rw            # the ONLY write mount
+      - ../tokens.json:/srv/tokens.json:ro
+      - ../groups.json:/srv/groups.json:ro
+    expose:
+      - "8080"                        # internal only — reached via Caddy /portal*
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["vector"]
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    expose:
+      - "6333"
+
+volumes:
+  docstore:
+  caddy_data:
+  caddy_config:
+  qdrant_data:

@@ -1,0 +1,4 @@
+{
+  "tok_alice_xxx": { "user": "alice", "allowed_prefixes": ["/"] },
+  "tok_bob_xxx":   { "user": "bob",   "allowed_prefixes": ["/public", "/team-fw"] }
+}

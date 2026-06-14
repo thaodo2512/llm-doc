@@ -1,0 +1,19 @@
+# Keep the build context small; the Dockerfile only needs pyproject/README/src.
+.git
+.venv
+venv
+var
+.cache
+tests
+docker
+clients
+*.md
+!README.md
+.env
+tokens.json
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.DS_Store

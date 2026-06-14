@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Secrets / local config (never commit). NOTE: .env.example IS tracked (the template).
+# (gitignore has no inline comments — keep each note on its own line.)
+/.env
+# timestamped .env backups from the deploy wizards (carry SESSION_SECRET / OPENAI_API_KEY)
+/.env.bak.*
+# atomic-write temp during an .env rewrite (orphaned only if a rewrite fails)
+/.env.tmp.*
+/tokens.json
+/groups.json
+
+# Backups contain tokens.json + .env secrets — never commit them
+/backups/
+# Token/group writer lock + atomic-write temps (siblings of tokens.json / groups.json)
+/.tokens.*
+/.groups.*
+# Portal internal state under raw/ (audit log + kept versions; ingest skips dotdirs)
+/raw/.portal/
+
+# NOTE: raw/ source documents ARE version-controlled — binary types via Git LFS,
+# text/Markdown as normal git (see .gitattributes). Nothing under raw/ is ignored.
+
+# Generated doc store / index / db (local dev)
+/var/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# HuggingFace model cache (the vendored models live in /models/, tracked via LFS)
+.cache/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store

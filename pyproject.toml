@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docmcp"
+version = "0.1.0"
+description = "Self-hosted MCP server that serves your docs to coding agents over Streamable HTTP — Docling ingest, path-prefix RBAC, keyword + optional offline-vector search."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "The docmcp Authors" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "documentation",
+    "rag",
+    "docling",
+    "search",
+    "vector-search",
+    "qdrant",
+    "coding-agents",
+    "self-hosted",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Framework :: AsyncIO",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "fastmcp>=3.0,<4.0",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
+]
+
+# Add your repository links here once the project is published, e.g.:
+# [project.urls]
+# Homepage = "https://github.com/<owner>/<repo>"
+# Repository = "https://github.com/<owner>/<repo>"
+# Issues = "https://github.com/<owner>/<repo>/issues"
+
+[project.optional-dependencies]
+# Ingestion / build-path only (heavy: torch + Docling models). Not needed to serve.
+parse = [
+    "docling>=2.0",
+    "tree-sitter>=0.25",
+    "tree-sitter-language-pack>=0.9",
+    "rapidocr-onnxruntime>=1.3",  # image OCR (ONNX/CPU, models bundled — no torch, no network)
+]
+# Optional vector layer (OFF by default). Fully OFFLINE: the default embedder is a local
+# ONNX model run via onnxruntime + tokenizers (no network). qdrant-client talks to the
+# on-prem Qdrant container only. onnxruntime is also pulled by rapidocr in [parse]; declared
+# here too so the slim server-vector image is self-sufficient without [parse].
+vector = [
+    "qdrant-client>=1.12",
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "numpy>=1.24",
+]
+# Legacy ONLINE embedding backend (EMBED_BACKEND=openai) — makes external API calls, so it
+# is opt-in only and NOT installed in the offline images. Use `.[vector,vector-openai]`.
+vector-openai = [
+    "openai>=1.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+docmcp = "docmcp.cli:main"
+docmcp-server = "docmcp.server:main"
+docmcp-ingest = "docmcp.ingest.pipeline:main"
+docmcp-portal = "docmcp.portal.app:main"
+docmcp-console = "docmcp.console.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docmcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests/unit", "tests/integration"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "docling: imports Docling/torch and runs real document conversion (slow; skip with -m 'not docling')",
+    "vector: requires a running Qdrant on localhost:6333 (skipped automatically if absent)",
+]

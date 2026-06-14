@@ -1,0 +1,143 @@
+# No `# syntax=` directive on purpose: this Dockerfile uses only built-in frontend
+# features, so BuildKit's bundled frontend builds it WITHOUT fetching docker/dockerfile
+# from Docker Hub — one fewer network dependency on a locked-down or slow-registry host
+# (that fetch fails first with a TLS handshake timeout when Docker Hub is unreachable).
+# Note: the base image, apt, and pip still need network; only the ML models under
+# models/ are vendored for offline use.
+#
+# Two targets from one file (build for x86 with: --platform linux/amd64):
+#   * server  — slim runtime you deploy/expose (fastmcp + ripgrep, no ML).
+#   * ingest  — heavy build-path image (Docling + tree-sitter [+ vector]) used
+#               to (re)build the doc store. Run on demand, not exposed.
+ARG PYTHON_VERSION=3.11
+
+# --------------------------------------------------------------------------- #
+FROM python:${PYTHON_VERSION}-slim AS base
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE NOTICE ./
+COPY src ./src
+
+# --------------------------------------------------------------------------- #
+# Serving image: keyword search only — small surface, no torch/Docling.
+FROM base AS server
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install .
+# Bind 0.0.0.0 *inside* the container; the port is never published — only the
+# reverse proxy reaches it over the compose network (preserves "bind localhost").
+ENV BIND_HOST=0.0.0.0 BIND_PORT=8080
+EXPOSE 8080
+CMD ["docmcp-server"]
+
+# --------------------------------------------------------------------------- #
+# Ingestion image: Docling (PDF/PPTX/DOCX/HTML) + tree-sitter (code) + vector.
+FROM base AS ingest
+# CPU-only torch + torchvision (no proprietary NVIDIA CUDA wheels): install them
+# from the PyTorch CPU index, then PIN those exact versions as a constraint so the
+# `.[parse,vector]` install (Docling pulls torch/torchvision) can't re-resolve them
+# back to the default CUDA wheels off PyPI. Pinning is required — without it pip
+# silently upgrades torch to the +cuXXX build and drags in ~15 nvidia-* wheels.
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+ && pip freeze | grep -iE '^(torch|torchvision)==' > /tmp/torch-cpu.txt \
+ && pip install ".[parse,vector]" -c /tmp/torch-cpu.txt \
+ && rm -f /tmp/torch-cpu.txt
+# Models are vendored in the repo under models/ (via Git LFS) and copied in at
+# build time — no network is used for models. DOCLING_ARTIFACTS_PATH points at the
+# parent dir holding the repo-named folders; HF_HUB_OFFLINE forbids any Hub calls.
+ENV DOCLING_ARTIFACTS_PATH=/opt/docling/models \
+    HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1
+COPY models /opt/docling/models
+# Fail the build if any vendored model is still an un-materialized Git LFS pointer
+# (a clone without `git lfs pull`). Otherwise Docling json.loads() a pointer text
+# file at ingest time and dies with a cryptic
+#   JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+# on PDFs with tables/OCR. `grep -I` skips the large binary weights; pointer files
+# are small text starting with "version https://git-lfs.github.com/spec/...".
+RUN if grep -rIl 'git-lfs.github.com/spec' /opt/docling/models >/dev/null 2>&1; then \
+        echo 'ERROR: models/ contains un-materialized Git LFS pointers — run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        grep -rIl 'git-lfs.github.com/spec' /opt/docling/models 2>/dev/null | sed 's,^/opt/docling/models/,  models/,' >&2; \
+        exit 1; \
+    fi
+# An empty (0-byte) model file passes the pointer grep above but still makes Docling's
+# json.loads() die with "JSONDecodeError: Expecting value: line 1 column 1 (char 0)" on
+# the first PDF (a partial/aborted `git lfs pull`). Fail the build here instead of
+# shipping an image that breaks on every document.
+RUN if find /opt/docling/models -type f -empty | grep -q .; then \
+        echo 'ERROR: models/ contains empty (0-byte) files — Git LFS fetch was incomplete. Run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        find /opt/docling/models -type f -empty | sed 's,^/opt/docling/models/,  models/,' >&2; \
+        exit 1; \
+    fi
+# Offline embedding model for vector ingest. Pinned to a STABLE path that is identical in
+# the server-vector image, so EMBED_MODEL_DIR=/opt/models/embed works everywhere (and is
+# robust to .env). The bytes are already verified by the models/ guards above (the embed
+# model lives under /opt/docling/models too); this is just the canonical embed location.
+COPY models/bge-small-en-v1.5 /opt/models/embed
+# Model-intrinsic embedding config baked in (so .env never needs spaced values, which the
+# shell-sourced .env can't hold unquoted). bge-small-en-v1.5: 384-dim, CLS pooling, query
+# instruction prefix; passages unprefixed. Override at runtime only to swap models.
+ENV EMBED_MODEL_DIR=/opt/models/embed \
+    EMBED_DIM=384 \
+    EMBED_POOLING=cls \
+    EMBED_QUERY_PREFIX="Represent this sentence for searching relevant passages: " \
+    EMBED_PASSAGE_PREFIX=""
+# OpenCV (pulled in by Docling's tableformer model) needs these native libraries
+# at runtime; the slim base lacks them, so `import cv2` fails with
+# "libxcb.so.1: cannot open shared object file" — which otherwise surfaces as
+# PDFs silently never getting indexed. Installed after the model COPY so the
+# heavy torch + model layers stay cached on rebuild.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["docmcp-ingest"]
+
+# --------------------------------------------------------------------------- #
+# Console image: the slim server image PLUS the Docker CLI + Compose plugin, so the
+# admin/setup console — run on the host with the Docker socket + repo bind-mounted —
+# can drive `docker compose` and the docmcp.sh verbs. Published on LOOPBACK ONLY; never
+# exposed. The static CLI binaries are copied from the official docker image (no apt repo
+# dance). The SPA is served from the bind-mounted console-ui/dist, so it is not baked in.
+FROM server AS console
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:27-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+CMD ["docmcp-console"]
+
+# --------------------------------------------------------------------------- #
+# Serving image WITH query-time vector search: the slim server PLUS qdrant-client and a
+# FULLY OFFLINE ONNX embedder (onnxruntime + tokenizers), plus ONLY the embedding model
+# (NOT the heavy Docling/OCR weights). Used as the docs-mcp image when ENABLE_VECTOR=true;
+# the plain `server` target stays the default for keyword-only deployments. No external
+# network at runtime — query embedding happens in-process from the baked model.
+FROM server AS server-vector
+RUN pip install ".[vector]"
+COPY models/bge-small-en-v1.5 /opt/models/embed
+# HF offline (defensive — the local embedder never calls the Hub) + the model-intrinsic
+# embedding config baked in (matches the ingest image; keeps spaced values out of .env).
+ENV HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1 \
+    EMBED_MODEL_DIR=/opt/models/embed \
+    EMBED_DIM=384 \
+    EMBED_POOLING=cls \
+    EMBED_QUERY_PREFIX="Represent this sentence for searching relevant passages: " \
+    EMBED_PASSAGE_PREFIX=""
+# Same offline integrity guards as the ingest image: fail the build on an un-materialized
+# Git LFS pointer or an empty (partial-pull) weight file, rather than shipping an image
+# whose embedder dies at query time.
+RUN if grep -rIl 'git-lfs.github.com/spec' /opt/models/embed >/dev/null 2>&1; then \
+        echo 'ERROR: embedding model has un-materialized Git LFS pointers — run "git lfs install && git lfs pull" before building. Offending files:' >&2; \
+        grep -rIl 'git-lfs.github.com/spec' /opt/models/embed 2>/dev/null | sed 's,^/opt/models/embed/,  models/bge-small-en-v1.5/,' >&2; \
+        exit 1; \
+    fi
+RUN if find /opt/models/embed -type f -empty | grep -q .; then \
+        echo 'ERROR: embedding model has empty (0-byte) files — incomplete git lfs pull. Run "git lfs install && git lfs pull" before building.' >&2; \
+        exit 1; \
+    fi
+CMD ["docmcp-server"]

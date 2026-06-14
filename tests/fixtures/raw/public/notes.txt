@@ -1,0 +1,5 @@
+Onboarding notes
+================
+
+The api_endpoint is configured per environment.
+Ping the platform team in #help for VPN access.

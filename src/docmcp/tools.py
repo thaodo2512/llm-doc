@@ -134,7 +134,9 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
     async def search_docs(query: str, limit: int = 10) -> list[Hit]:
         """Keyword/full-text search. Returns {path, line, snippet, score} hits
         restricted to your allowed prefixes. Use exact terms: code symbols,
-        config keys, error strings. `limit` is capped server-side."""
+        config keys, error strings. For meaning-based or paraphrased questions
+        (when you can't name the exact term), use `semantic_search` instead, or as
+        a fallback when this returns weak/no hits. `limit` is capped server-side."""
         user, prefixes = _caller()
         t0 = time.perf_counter()
         result = tools.do_search(query, limit, prefixes)
@@ -170,8 +172,13 @@ def register_tools(mcp: FastMCP, settings: Settings) -> DocTools:
 
     @mcp.tool
     async def semantic_search(query: str, limit: int = 10) -> list[Hit]:
-        """Optional vector search. Returns a disabled error unless ENABLE_VECTOR
-        is set. Same {path, line, snippet, score} shape, prefix-filtered."""
+        """Semantic (vector) search — finds passages by MEANING, not exact words.
+        Complements keyword `search_docs`: reach for it on conceptual or paraphrased
+        questions, when you don't know the precise term, or as a fallback when
+        `search_docs` returns weak or no hits. Returns the same
+        {path, line, snippet, score} hits, restricted to your allowed prefixes.
+        Optional and OFF by default: if it returns a "disabled" error, just fall
+        back to `search_docs`. `limit` is capped server-side."""
         user, prefixes = _caller()
         t0 = time.perf_counter()
         try:

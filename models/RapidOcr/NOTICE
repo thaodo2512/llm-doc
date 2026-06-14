@@ -1,0 +1,61 @@
+# NOTICE — Vendored RapidOCR / PP-OCRv4 Model Weights
+
+This directory contains pre-trained Optical Character Recognition (OCR) model
+weights and character dictionaries that are **vendored (redistributed) third-party
+artifacts**. They are not original to this project.
+
+## Provenance
+
+The underlying OCR models (PP-OCRv4, PP-OCRv3, and the PP-OCR v2.0 text-direction
+classifier) were trained and released by the **PaddleOCR** project, developed by the
+**PaddlePaddle Authors (Baidu)**:
+
+- PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
+- Copyright (c) 2016 PaddlePaddle Authors. All Rights Reserved.
+
+These models were converted to the ONNX format and packaged for distribution by the
+**RapidOCR** project (RapidAI):
+
+- RapidOCR: https://github.com/RapidAI/RapidOCR
+- Model distribution: https://huggingface.co/SWHL/RapidOCR
+
+As stated by the RapidOCR project: *"The copyright of the OCR model is held by Baidu,
+while the copyrights of all other engineering scripts are retained by the repository's
+owner."* The ONNX conversion and packaging are the work of the RapidAI / RapidOCR
+contributors.
+
+## License
+
+Both PaddleOCR and RapidOCR are released under the **Apache License, Version 2.0**.
+The bundled weights and dictionaries are redistributed here under that same license.
+The full license text is in the sibling [`LICENSE`](./LICENSE) file in this directory.
+
+You may obtain a copy of the Apache License 2.0 at:
+http://www.apache.org/licenses/LICENSE-2.0
+
+## Copyright Holders
+
+- **PP-OCRv4 / PP-OCRv3 / PP-OCR v2.0 model weights:** Copyright (c) 2016 PaddlePaddle
+  Authors (Baidu). All Rights Reserved.
+- **ONNX conversion and packaging:** Copyright (c) RapidAI / RapidOCR contributors.
+
+## Bundled Files
+
+ONNX model weights (under `onnx/PP-OCRv4/`):
+
+- `onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx` — Chinese PP-OCRv4 text detection (mobile)
+- `onnx/PP-OCRv4/det/en_PP-OCRv3_det_mobile.onnx` — English PP-OCRv3 text detection (mobile)
+- `onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx` — PP-OCR v2.0 text-direction classifier (mobile)
+- `onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx` — Chinese PP-OCRv4 text recognition (mobile)
+- `onnx/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile.onnx` — English PP-OCRv4 text recognition (mobile)
+
+Character dictionaries (under `paddle/PP-OCRv4/`):
+
+- `paddle/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile/ppocr_keys_v1.txt` — Chinese recognition character dictionary
+- `paddle/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile/en_dict.txt` — English recognition character dictionary
+
+---
+
+No modifications have been made to the model weights or dictionaries; they are
+redistributed as obtained from the RapidOCR distribution. This NOTICE file is provided
+to satisfy the attribution requirements of the Apache License 2.0.

@@ -21,13 +21,24 @@ downloading them.
     License: CDLA-Permissive-2.0
 
   * RapidOCR PP-OCRv4 OCR models (text detection / classification / recognition,
-    ONNX) — from the RapidAI/RapidOCR project (PaddleOCR PP-OCRv4 weights)
+    ONNX) — packaged by the RapidAI/RapidOCR project; the model weights originate
+    from PaddleOCR (Copyright (c) 2016 PaddlePaddle Authors / Baidu).
     License: Apache-2.0
 
   * BGE small English embedding model (semantic search) — BAAI/bge-small-en-v1.5
     License: MIT
 
 Where to find a copy of each license:
-  * Apache-2.0 (docling-layout-heron, RapidOCR) — the root LICENSE file of this repo.
+  * Apache-2.0 (docling-layout-heron) — the root LICENSE file of this repo.
+  * Apache-2.0 (RapidOCR PP-OCRv4) — models/RapidOcr/LICENSE, with attribution
+    (Baidu/PaddleOCR weights + RapidAI packaging) in models/RapidOcr/NOTICE.
   * MIT (bge-small-en-v1.5) — models/bge-small-en-v1.5/LICENSE (vendored alongside the weights).
-  * CDLA-Permissive-2.0 (docling-models) — https://cdla.dev/permissive-2-0/
+  * CDLA-Permissive-2.0 (docling-models) — models/docling-project--docling-models/LICENSE
+    (full agreement text vendored alongside the weights; also at https://cdla.dev/permissive-2-0/).
+
+--------------------------------------------------------------------------------
+Third-party software dependencies
+
+docmcp depends on third-party Python packages, frontend build tooling, and
+container base images, all under permissive open-source licenses. See
+THIRD-PARTY-NOTICES.md for the full inventory and per-component licenses.

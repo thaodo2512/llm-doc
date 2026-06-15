@@ -69,8 +69,21 @@ The host needs only **Docker** (with the Compose plugin). The helper runs everyt
 ./docmcp.sh stop                           # stop (your ingested store is kept)
 ./docmcp.sh schedule 30m                   # (optional) auto re-ingest on a cron schedule
 ./docmcp.sh console                        # launch the admin/setup web UI
+./docmcp.sh package                        # build a delivery .zip (project + models; no git history, no secrets)
 ./docmcp.sh help                           # all commands
 ```
+
+### Packaging for offline delivery (`package`)
+
+`./docmcp.sh package [out.zip]` builds a single `.zip` of the project **with the real vendored
+models baked in** (it preflights Git LFS so the weights are materialized, not pointer stubs), and
+deliberately **excludes** the git history (`.git/`), local build/runtime state (`.venv/`,
+`console-ui/node_modules/`, `var/`, caches), and **all secrets** (`.env`, `tokens.json`,
+`groups.json`). It refuses to write an archive that leaked a root secret. The recipient just
+unzips and runs `./docmcp.sh setup` (or `console`) — **Docker is the only prerequisite; no git or
+git-lfs needed**, and they generate their own `.env`/admin token. Output defaults to
+`./docmcp-delivery.zip` (~530 MB; the model formats are already compressed). Use `backup` instead
+to snapshot a *running* deployment's tokens/certs.
 
 `setup` builds the slim **server** image right away; the heavier **ingest** image (Docling +
 tree-sitter) is built the first time you run `./docmcp.sh ingest`. Under the hood the helper wraps

@@ -1564,6 +1564,48 @@ cmd_backup() {
   info "raw/ is backed up via Git LFS (git push); curated store + index are rebuildable (./docmcp.sh ingest) — restore steps in RUNBOOK.md"
 }
 
+# package [out.zip]  — build a delivery .zip of the project + vendored models, with NO git
+# history and NO secrets. Ships REAL files (recipient needs only Docker — no git/git-lfs).
+cmd_package() {
+  command -v zip >/dev/null 2>&1 || die "zip is not installed — install it: apt-get install zip | dnf install zip | brew install zip"
+  # Models must be REAL files, not Git LFS pointers, or the archive ships broken ~130-byte stubs.
+  # check_lfs_models is the same preflight build/ingest use (verifies every models/** file and
+  # auto-repairs from Git LFS unless LFS_AUTO_REPAIR=false).
+  check_lfs_models
+  local out="${1:-$ROOT/docmcp-delivery.zip}"
+  case "$out" in /*) ;; *) out="$PWD/$out" ;; esac          # resolve relative to where you ran it
+  case "$out" in *.zip) ;; *) out="$out.zip" ;; esac
+  mkdir -p "$(dirname "$out")" || die "cannot create output dir: $(dirname "$out")"
+  # What to leave out: git history, local venv/build caches, runtime state, and SECRETS.
+  local ex=( '.git/*' '.venv/*' 'console-ui/node_modules/*' 'var/*' 'backups/*'
+             '.env' 'tokens.json' 'groups.json'
+             '*__pycache__/*' '*.pyc' '.pytest_cache/*' '.ruff_cache/*' '*.DS_Store' )
+  # Don't fold a prior archive sitting at the destination into the new one.
+  case "$out" in "$ROOT"/*) ex+=( "${out#"$ROOT"/}" ) ;; esac
+  # Build into a temp dir OUTSIDE the tree so the archive never includes itself, then move in.
+  local tmpd; tmpd="$(mktemp -d)" || die "mktemp failed"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpd'" RETURN
+  info "packaging the working tree (real models, no git history, no secrets)…"
+  ( cd "$ROOT" && zip -r -q -X "$tmpd/pkg.zip" . -x "${ex[@]}" ) || die "zip failed"
+  # Safety net: never deliver an archive that leaked a ROOT secret file. Match the filename
+  # column EXACTLY (grep -x) so git-tracked fixtures/examples like tests/fixtures/tokens.json
+  # don't false-trigger, and read the whole stream (NO `grep -q`, whose early exit would SIGPIPE
+  # unzip and trip `set -o pipefail`); `|| true` keeps a clean no-match from aborting under set -e.
+  if command -v unzip >/dev/null 2>&1; then
+    local leaked
+    leaked="$(unzip -l "$tmpd/pkg.zip" 2>/dev/null | awk '{print $NF}' | grep -xE '\.env|tokens\.json|groups\.json' || true)"
+    [ -z "$leaked" ] || die "ABORT: secret file(s) in the archive: $(printf '%s ' $leaked)— not delivering. Check the -x excludes."
+  fi
+  mv -f "$tmpd/pkg.zip" "$out" || die "cannot write $out"
+  info "packaged → ${C_B}$out${C_0}  ($(du -h "$out" 2>/dev/null | cut -f1))"
+  if command -v unzip >/dev/null 2>&1; then
+    local nmodels; nmodels="$(unzip -l "$out" | grep -cE 'models/.*\.(onnx|safetensors|bin|pt|pth)$' || true)"
+    info "  ${nmodels} model weight files · NO .git history · NO .env/tokens.json/groups.json"
+  fi
+  info "  recipient: unzip, then ${C_B}./docmcp.sh setup${C_0} (Docker only — no git or git-lfs needed)"
+}
+
 # schedule [<spec>|off]  — run `ingest` on a schedule. <spec> is one of:
 #   30m | 2h                 every N minutes (1-59) or hours (1-23)
 #   hourly | daily | weekly  presets
@@ -1981,6 +2023,7 @@ ${C_B}docmcp.sh${C_0} — Documentation MCP Server helper (Docker-based; only Do
   ${C_B}inventory${C_0}                 corpus breakdown by type + top-level folder
   ${C_B}doctor${C_0}                    health checks (non-zero exit if unhealthy)
   ${C_B}backup${C_0} [dir]             snapshot tokens.json + groups.json + .env + audit + Caddy certs (→ ./backups)
+  ${C_B}package${C_0} [out.zip]        build a delivery .zip (project + models; NO git history, NO secrets)
   ${C_B}token${C_0} <user> <prefix...> [--group <name>] [--write <prefix>] [--expires <Nd|Nh|never>] [--comment <text>] | --all  mint a token (--write = portal upload scope)
   ${C_B}token-list${C_0} [--expired]     show configured tokens (or only expired ones)
   ${C_B}token-rm${C_0} <token|user>     revoke a token (or all of a user's tokens)
@@ -2045,6 +2088,7 @@ case "$cmd" in
   inventory)          cmd_inventory "$@" ;;
   doctor)             cmd_doctor "$@" ;;
   backup)             cmd_backup "$@" ;;
+  package)            cmd_package "$@" ;;
   help|-h|--help)     usage ;;
   *)                  warn "unknown command: $cmd"; usage; exit 1 ;;
 esac
